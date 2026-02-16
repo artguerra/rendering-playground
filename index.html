@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>raytracer</title>
+  </head>
+  <body>
+    <div style="text-align:center;">
+      <canvas width="1024" height="768"></canvas>
+      <p>
+      <input type="checkbox" id="raytracingCheckbox">
+      <label for="raytracingCheckbox">Ray tracing</label>
+      </p>
+
+      <input type="color" id="diffuseAlbedo">
+      <label for="diffuseAlbedo">Diffuse Albedo</label>
+
+      <input type="range" id="roughness" min="0.0" max="1.0" step="0.05">
+      <label for="roughness">Roughness</label>
+
+      <input type="range" id="metalness" min="0.0" max="1.0" step="0.05">
+      <label for="metalness">Metalness</label>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
