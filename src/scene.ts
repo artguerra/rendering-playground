@@ -2,7 +2,7 @@ import { vec3 } from "wgpu-matrix";
 
 import { Camera } from "./camera";
 import { mergeMeshes, type MeshInstance, type MergedGeometry } from "./mesh";
-import type { GPUAppBase } from "./renderer";
+import type { GPUApp, GPUAppBase } from "./renderer";
 import type { LightSource, Material } from "./types";
 import { createGPUBuffer } from "./utils";
 
@@ -48,16 +48,19 @@ export class Scene {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // 8 floats per material
-    const matData = new Float32Array(this.materials.length * 8);
+    // 8 bytes per material
+    const matData = new ArrayBuffer(this.materials.length * 8 * 4);
+    const matDataF32 = new Float32Array(matData);
+    const matDataU32 = new Uint32Array(matData);
     for (let i = 0; i < this.materials.length; i++) {
       const m = this.materials[i];
       const offset = i * 8;
       
-      matData.set(m.albedo, offset);
-      matData[offset + 3] = m.roughness;
-      matData[offset + 4] = m.metalness;
-      // 5, 6, 7 are padding
+      matDataF32.set(m.albedo, offset);
+      matDataF32[offset + 3] = m.roughness;
+      matDataF32[offset + 4] = m.metalness;
+      matDataU32[offset + 5] = m.useProceduralTexture ? 1 : 0;
+      // 6, 7 are padding
     }
     this.matBuffer = createGPUBuffer(app.device, matData, storageUsage);
 
@@ -96,7 +99,7 @@ export class Scene {
     this.lights[this.lights.length - 1].position = vec3.create(0.5 * Math.cos (angle), 0.9, 0.5 * Math.sin (angle));
   }
 
-  updateMaterials(queue: GPUQueue) {
+  updateMaterials(app: GPUApp) {
     if (!this.buffersInitialized) return;
 
     const matData = new Float32Array(this.materials.length * 8);
@@ -109,10 +112,10 @@ export class Scene {
       matData[offset + 4] = m.metalness;
     }
 
-    queue.writeBuffer(this.matBuffer!, 0, matData);
+    app.device.queue.writeBuffer(this.matBuffer!, 0, matData);
   }
 
-  updateGPU(queue: GPUQueue) {
+  updateGPU(app: GPUApp) {
     if (!this.buffersInitialized) return;
 
     const sceneData = new Float32Array(88);
@@ -129,14 +132,16 @@ export class Scene {
     sceneData[81] = this.camera.aspect;
     
     // scene
-    sceneData[84] = this.instances.length;
-    sceneData[85] = this.lights.length;
+    sceneData[84] = app.canvas.width;
+    sceneData[85] = app.canvas.height;
+    sceneData[86] = this.instances.length;
+    sceneData[87] = this.lights.length;
 
-    queue.writeBuffer(this.uniformBuffer!, 0, sceneData);
+    app.device.queue.writeBuffer(this.uniformBuffer!, 0, sceneData);
 
     // update lights
     // repack and upload it again
     this.packLightData();
-    queue.writeBuffer(this.lightBuffer!, 0, this.lightDataArray!);
+    app.device.queue.writeBuffer(this.lightBuffer!, 0, this.lightDataArray!);
   }
 }

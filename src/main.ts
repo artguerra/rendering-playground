@@ -65,21 +65,21 @@ function initEvents(app: GPUApp, scene: Scene) {
 
   ui.albedoPicker.addEventListener("input", () => {
     scene.materials[scene.materials.length - 1].albedo = hexToSRGB(ui.albedoPicker.value);
-    scene.updateMaterials(app.device.queue);
+    scene.updateMaterials(app);
   });
 
   ui.roughnessSlider.addEventListener("input", () => {
     const val = parseFloat(ui.roughnessSlider.value);
 
     scene.materials[scene.materials.length - 1].roughness = val;
-    scene.updateMaterials(app.device.queue);
+    scene.updateMaterials(app);
   });
 
   ui.metalnessSlider.addEventListener("input", () => {
     const val = parseFloat(ui.metalnessSlider.value);
 
     scene.materials[scene.materials.length - 1].metalness = val;
-    scene.updateMaterials(app.device.queue);
+    scene.updateMaterials(app);
   });
 }
 
@@ -95,16 +95,16 @@ async function main() {
   const angle = 0.3;
 
   const materials: Material[] = [
-    { albedo: vec3.create(1.0, 1.0, 1.0), roughness: 1.0, metalness: 0.0 }, // white wall
-    { albedo: vec3.create(1.0, 0.0, 0.0), roughness: 1.0, metalness: 0.0 }, // red wall
-    { albedo: vec3.create(0.0, 1.0, 0.0), roughness: 1.0, metalness: 0.0 }, // green wall
-    { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 0.55, metalness: 1.0 } // main object material
+    { albedo: vec3.create(1.0, 1.0, 1.0), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // white wall
+    { albedo: vec3.create(1.0, 0.0, 0.0), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // red wall
+    { albedo: vec3.create(0.0, 1.0, 0.0), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // green wall
+    { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 0.55, metalness: 1.0, useProceduralTexture: true } // main object material
   ];
 
   const lights: LightSource[] = [
     { position: vec3.create(-0.75*s, 1.5*s, 1.5*s), intensity: 1.5, color: vec3.create(1.0, 1.0, 1.0), angle, spot, rayTracedShadows: 1 },
-    { position: vec3.create(0.75*s, 0.5*s, 1.5*s), intensity: 2.5, color: vec3.create(0.0, 0.2, 0.8), angle, spot, rayTracedShadows: 1 },
-    { position: vec3.create(-0.75*s, 0.5*s, -0.75*s), intensity: 0.8, color: vec3.create(0.7, 0.3, 0.0), angle, spot, rayTracedShadows: 1 },
+    { position: vec3.create(0.75*s, 0.5*s, 1.5*s), intensity: 2.5, color: vec3.create(1.0, 1.0, 1.0), angle, spot, rayTracedShadows: 1 },
+    { position: vec3.create(-0.75*s, 0.5*s, -0.75*s), intensity: 0.8, color: vec3.create(1.0, 1.0, 1.0), angle, spot, rayTracedShadows: 1 },
     { position: vec3.create(1.8*s, 1.8*s, 1.8*s), intensity: 0.8, color: vec3.create(1.0, 1.0, 1.0), angle, spot, rayTracedShadows: 1 },
   ];
 
@@ -128,7 +128,7 @@ async function main() {
 
     scene.animate();
     scene.camera.updateCamera();
-    scene.updateGPU(app.device.queue);
+    scene.updateGPU(app);
 
     render(app, scene, bindGroup, raytracingEnabled);
     requestAnimationFrame(frame);

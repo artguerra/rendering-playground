@@ -1,4 +1,4 @@
-export function createGPUBuffer(device: GPUDevice, data: ArrayBufferView<ArrayBuffer>, usage: GPUBufferUsageFlags) {
+export function createGPUBuffer(device: GPUDevice, data: ArrayBufferView<ArrayBuffer> | ArrayBuffer, usage: GPUBufferUsageFlags) {
   const buffer = device.createBuffer({
     size: (data.byteLength + 3) & ~3, // 4-byte aligned
     usage,

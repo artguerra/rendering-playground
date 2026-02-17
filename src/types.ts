@@ -13,4 +13,5 @@ export interface Material {
   albedo: Vec3;
   roughness: number;
   metalness: number;
+  useProceduralTexture: boolean;
 }
