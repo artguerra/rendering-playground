@@ -1,4 +1,5 @@
 import mainShaders from "@shaders/main.wgsl?raw";
+import computeShaders from "@shaders/procedural.wgsl?raw";
 
 import { Scene } from "./scene";
 
@@ -12,10 +13,21 @@ export interface GPUAppBase {
 
 export interface GPUApp extends GPUAppBase {
   depthTexture: GPUTexture;
+  noiseTexture: GPUTexture;
+  noiseSampler: GPUSampler;
+
   shaderModule: GPUShaderModule;
+  computeShaderModule: GPUShaderModule;
+
   rasterPipeline: GPURenderPipeline;
   raytracingPipeline: GPURenderPipeline;
+  computePipeline: GPUComputePipeline;
+
   bindGroupLayout: GPUBindGroupLayout;
+  computeBindGroupLayout: GPUBindGroupLayout;
+
+  renderBindGroup?: GPUBindGroup;
+  computeBindGroup?: GPUBindGroup;
 }
 
 export async function initWebGPU(canvas: HTMLCanvasElement): Promise<GPUAppBase> {
@@ -45,6 +57,41 @@ export function initRenderPipeline(app: GPUAppBase): GPUApp {
     code: mainShaders,
   });
 
+  const computeShaderModule = app.device.createShaderModule({
+    label: "procedural texture shaders",
+    code: computeShaders,
+  });
+
+  const noiseTexture = app.device.createTexture({
+    label: "noise texture",
+    size: [1024, 1024, 1],
+    format:  "rgba16float",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
+  });
+
+  const noiseSampler = app.device.createSampler({
+    label: "noise sampler",
+    minFilter: "linear",
+    magFilter: "linear",
+    addressModeU: "repeat",
+    addressModeV: "repeat",
+  });
+
+  const computeBindGroupLayout = app.device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: "rgba16float" } },
+    ]
+  });
+
+  const computePipeline = app.device.createComputePipeline({
+    layout: app.device.createPipelineLayout({ bindGroupLayouts: [computeBindGroupLayout] }),
+    compute: {
+      module: computeShaderModule,
+      entryPoint: "main",
+    }
+  });
+
   const bindGroupLayout = app.device.createBindGroupLayout({
     entries: [
       { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
@@ -54,6 +101,8 @@ export function initRenderPipeline(app: GPUAppBase): GPUApp {
       { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      { binding: 7, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { } },
+      { binding: 8, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, sampler: { } },
     ]
   });
 
@@ -113,15 +162,16 @@ export function initRenderPipeline(app: GPUAppBase): GPUApp {
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
   });
 
-  return { ...app, shaderModule, bindGroupLayout, rasterPipeline, raytracingPipeline, depthTexture };
+  return { ...app, shaderModule, computeShaderModule, bindGroupLayout, computeBindGroupLayout,
+          rasterPipeline, raytracingPipeline, computePipeline, depthTexture, noiseTexture, noiseSampler };
 }
 
-export function createSceneBindGroup(app: GPUApp, scene: Scene): GPUBindGroup {
+export function createSceneBindGroup(app: GPUApp, scene: Scene) {
   if (!scene.buffersInitialized) {
     throw new Error("Cannot create bind group: Scene buffers are not initialized.");
   }
 
-  return app.device.createBindGroup({
+  app.renderBindGroup = app.device.createBindGroup({
     layout: app.bindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: scene.uniformBuffer! } },
@@ -131,11 +181,31 @@ export function createSceneBindGroup(app: GPUApp, scene: Scene): GPUBindGroup {
       { binding: 4, resource: { buffer: scene.instanceBuffer! } },
       { binding: 5, resource: { buffer: scene.matBuffer! } },
       { binding: 6, resource: { buffer: scene.lightBuffer! } },
+      { binding: 7, resource: app.noiseTexture.createView() },
+      { binding: 8, resource: app.noiseSampler },
     ],
   });
 }
 
-export function render(app: GPUApp, scene: Scene, bindGroup: GPUBindGroup, useRaytracing: boolean): void {
+export function createComputeBindGroup(app: GPUApp, scene: Scene) {
+  if (!scene.buffersInitialized) {
+    throw new Error("Cannot create bind group: Scene buffers are not initialized.");
+  }
+
+  app.computeBindGroup = app.device.createBindGroup({
+    layout: app.computeBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: scene.noiseParamsBuffer! } },
+      { binding: 1, resource: app.noiseTexture.createView() },
+    ]
+  });
+};
+
+export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void {
+  if (!app.renderBindGroup) {
+    throw new Error("Render bind group not initialized.");
+  }
+
   const renderPassDescriptor: GPURenderPassDescriptor = {
     label: "Main rendering pass",
     colorAttachments: [{
@@ -155,7 +225,7 @@ export function render(app: GPUApp, scene: Scene, bindGroup: GPUBindGroup, useRa
   const encoder = app.device.createCommandEncoder({ label: "display encoder" });
   const pass = encoder.beginRenderPass(renderPassDescriptor);
 
-  pass.setBindGroup(0, bindGroup);
+  pass.setBindGroup(0, app.renderBindGroup!);
 
   if (useRaytracing) {
     pass.setPipeline(app.raytracingPipeline);
@@ -173,5 +243,23 @@ export function render(app: GPUApp, scene: Scene, bindGroup: GPUBindGroup, useRa
 
   const commandBuffer = encoder.finish();
   app.device.queue.submit([commandBuffer]);
+}
+
+export function bakeNoiseTexture(app: GPUApp) {
+  if (!app.computeBindGroup) {
+    throw new Error("Compute bind group not initialized.");
+  }
+
+  const encoder = app.device.createCommandEncoder({ label: "compute encoder" });
+
+  const computePass = encoder.beginComputePass();
+
+  computePass.setPipeline(app.computePipeline);
+  computePass.setBindGroup(0, app.computeBindGroup!);
+  computePass.dispatchWorkgroups(64, 64, 1); // 1024 / 64 = 64
+  computePass.end();
+
+  const commandBuffer = encoder.finish();
+   app.device.queue.submit([commandBuffer]);
 }
 

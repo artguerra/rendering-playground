@@ -1,7 +1,11 @@
 import { vec3, type Vec3 } from "wgpu-matrix";
 
 import { Camera } from "./camera";
-import { type GPUApp, initWebGPU, initRenderPipeline, createSceneBindGroup, render } from "./renderer";
+import {
+  type GPUApp, initWebGPU, initRenderPipeline,
+  createSceneBindGroup, createComputeBindGroup,
+  render, bakeNoiseTexture
+} from "./renderer";
 import { Scene } from "./scene";
 import { type MeshInstance, createQuad, createSphere } from "./mesh";
 import type { Material, LightSource } from "./types";
@@ -12,6 +16,9 @@ const ui = {
   albedoPicker: document.querySelector("#diffuseAlbedo") as HTMLInputElement,
   roughnessSlider: document.querySelector("#roughness") as HTMLInputElement,
   metalnessSlider: document.querySelector("#metalness") as HTMLInputElement,
+  octavesSlider: document.querySelector("#tex-octaves") as HTMLInputElement,
+  freqSlider: document.querySelector("#tex-freq") as HTMLInputElement,
+  ampSlider: document.querySelector("#tex-amp") as HTMLInputElement,
 };
 
 function hexToSRGB(hex: string): Vec3 {
@@ -81,6 +88,20 @@ function initEvents(app: GPUApp, scene: Scene) {
     scene.materials[scene.materials.length - 1].metalness = val;
     scene.updateMaterials(app);
   });
+
+  const texUpdate = () => {
+    const octaves = parseInt(ui.octavesSlider.value);
+    const freq = parseInt(ui.freqSlider.value);
+    const amp = parseInt(ui.ampSlider.value);
+
+    scene.updateTexture(app, { octaves, freq, amp });
+    bakeNoiseTexture(app);
+  }
+
+  ui.octavesSlider.addEventListener("input", texUpdate);
+  ui.freqSlider.addEventListener("input", texUpdate);
+  ui.ampSlider.addEventListener("input", texUpdate);
+  texUpdate();
 }
 
 async function main() {
@@ -119,7 +140,8 @@ async function main() {
 
   const scene = new Scene(camera, instances, materials, lights);
   scene.createBuffers(app);
-  const bindGroup = createSceneBindGroup(app, scene);
+  createSceneBindGroup(app, scene);
+  createComputeBindGroup(app, scene);
 
   initEvents(app, scene);
 
@@ -130,7 +152,7 @@ async function main() {
     scene.camera.updateCamera();
     scene.updateGPU(app);
 
-    render(app, scene, bindGroup, raytracingEnabled);
+    render(app, scene, raytracingEnabled);
     requestAnimationFrame(frame);
   }
   

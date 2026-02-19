@@ -1,5 +1,4 @@
 const PI = 3.14159265358979323846;
-const SQRT_2 = 1.41421356237;
 const INV_SQRT_3_4 = 1.154700538;
 const INV_PI = 1.0 / 3.14159265358979323846;
 const EPSILON = 1e-6;
@@ -68,6 +67,12 @@ var<storage, read> materials: array<Material>;
 @group(0) @binding(6)
 var<storage, read> light_sources: array<LightSource>;
 
+@group(0) @binding(7)
+var noise_texture: texture_2d<f32>;
+
+@group(0) @binding(8)
+var noise_sampler: sampler;
+
 struct RasterVertexInput {
   @builtin(vertex_index) vertex_idx: u32,
   @builtin(instance_index) mesh_idx: u32
@@ -108,25 +113,11 @@ fn attenuation(dist: f32, cone_decay: f32) -> f32 {
 // ----------------------------- noise functions ----------------------------- 
 
 // from https://www.shadertoy.com/view/4djSRW
-fn rand_dir_2d(p: vec2f) -> vec2f {
-	var p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
-  p3 += dot(p3, p3.yzx + 33.33);
-
-  return -1.0 + 2.0 * fract((p3.xx + p3.yz) * p3.zy);
-}
-
 fn rand_dir_3d(p: vec3f) -> vec3f {
 	var p3 = fract(p * vec3f(0.1031, 0.1030, 0.0973));
   p3 += dot(p3, p3.yxz + 33.33);
 
   return -1.0 + 2.0 * fract((p3.xxy + p3.yxx) * p3.zyx);
-}
-
-fn gradient_eval(corner: vec2f, p: vec2f) -> f32 {
-  let dist = p - corner;
-  let grad = rand_dir_2d(corner);
-
-  return dot(dist, grad);
 }
 
 fn gradient_eval_3d(corner: vec3f, p: vec3f) -> f32 {
@@ -135,46 +126,9 @@ fn gradient_eval_3d(corner: vec3f, p: vec3f) -> f32 {
 
   return dot(dist, grad);
 }
-
-fn quintic_interpolation(t: vec2f) -> vec2f {
-  // 6t^5 - 15t^4 + 10t^3
-  return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-}
-
 fn quintic_interpolation_3d(t: vec3f) -> vec3f {
   // 6t^5 - 15t^4 + 10t^3
   return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-}
-
-fn perlin_noise_2d(x: vec2f, freq: f32, amp: f32) -> f32 {
-  let p = x * freq;
-
-  let i = floor(p);
-  let f = fract(p);
-
-  // corners
-  let i00 = i;
-  let i01 = i + vec2f(0.0, 1.0);
-  let i10 = i + vec2f(1.0, 0.0);
-  let i11 = i + vec2f(1.0, 1.0);
-
-  // gradients at the corners
-  let n00 = gradient_eval(i00, p);
-  let n01 = gradient_eval(i01, p);
-  let n10 = gradient_eval(i10, p);
-  let n11 = gradient_eval(i11, p);
-
-  // interpolation
-  let qi = quintic_interpolation(f);
-  let nx0 = mix(n00, n10, qi.x);
-  let nx1 = mix(n01, n11, qi.x);
-  let noise_val = mix(nx0, nx1, qi.y);
-
-  // originally in range [-sqrt(1/2), sqrt(1/2)]
-  let scaled = noise_val * SQRT_2;
-
-  // apply amplitude, clamp to [-1,1]
-  return clamp(scaled * amp, -1.0, 1.0);
 }
 
 fn perlin_noise_3d(x: vec3f, freq: f32, amp: f32) -> f32 {
@@ -223,20 +177,6 @@ fn perlin_noise_3d(x: vec3f, freq: f32, amp: f32) -> f32 {
 
   // apply amplitude, clamp to [-1,1]
   return clamp(scaled * amp, -1.0, 1.0);
-}
-
-fn fbm_perlin_noise_2d(x: vec2f, octaves: u32, initial_freq: f32, initial_amp: f32) -> f32 {
-  var total = 0.0;
-  var cur_freq = initial_freq;
-  var cur_amp = initial_amp;
-
-  for (var i: u32 = 0u; i < octaves; i++) {
-    total += perlin_noise_2d(x, cur_freq, cur_amp);
-    cur_freq *= 2.0;
-    cur_amp /= 2.0;
-  }
-
-  return total;
 }
 
 fn fbm_perlin_noise_3d(x: vec3f, octaves: u32, initial_freq: f32, initial_amp: f32) -> f32 {
@@ -344,7 +284,8 @@ fn light_shade(
 
   if (material_idx == 3) {
     let world_pos = (cam.inv_view_mat * vec4f(position, 1.0)).xyz;
-    let noise = fbm_perlin_noise_3d(world_pos, 12u, 10.0, 1.0);
+    // let noise = fbm_perlin_noise_3d(world_pos, 12u, 10.0, 1.0);
+    let noise = textureSample(noise_texture, noise_sampler, world_pos.xy).r;
     let t = 0.5 + 0.5 * noise;
 
     let decayed_albedo = m.albedo * 0.6;

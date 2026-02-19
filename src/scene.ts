@@ -18,6 +18,7 @@ export class Scene {
   // GPU buffers
   buffersInitialized: boolean = false;
   uniformBuffer?: GPUBuffer;
+  noiseParamsBuffer?: GPUBuffer;
   posBuffer?: GPUBuffer;
   normBuffer?: GPUBuffer;
   triBuffer?: GPUBuffer;
@@ -45,6 +46,11 @@ export class Scene {
 
     this.uniformBuffer = app.device.createBuffer({
       size: 88 * 4, // 88 floats in scene struct in shader
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    this.noiseParamsBuffer = app.device.createBuffer({
+      size: 4 * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -143,5 +149,19 @@ export class Scene {
     // repack and upload it again
     this.packLightData();
     app.device.queue.writeBuffer(this.lightBuffer!, 0, this.lightDataArray!);
+  }
+
+  updateTexture(app: GPUApp, params: { freq: number; amp: number; octaves: number }) {
+    if (!this.buffersInitialized) return;
+
+    const noiseParams = new ArrayBuffer(4 * 4);
+    const noiseParamsF32 = new Float32Array(noiseParams);
+    const noiseParamsU32 = new Uint32Array(noiseParams);
+
+    noiseParamsF32[0] = params.freq;
+    noiseParamsF32[1] = params.amp;
+    noiseParamsU32[2] = params.octaves;
+
+    app.device.queue.writeBuffer(this.noiseParamsBuffer!, 0, noiseParams);
   }
 }

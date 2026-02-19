@@ -13,14 +13,36 @@
       <label for="raytracingCheckbox">Ray tracing</label>
       </p>
 
-      <input type="color" id="diffuseAlbedo">
-      <label for="diffuseAlbedo">Diffuse Albedo</label>
+      <div>
+        <input type="color" id="diffuseAlbedo">
+        <label for="diffuseAlbedo">Diffuse Albedo</label>
+      </div>
 
-      <input type="range" id="roughness" min="0.0" max="1.0" step="0.05">
-      <label for="roughness">Roughness</label>
 
-      <input type="range" id="metalness" min="0.0" max="1.0" step="0.05">
-      <label for="metalness">Metalness</label>
+      <div>
+        <input type="range" id="roughness" min="0.0" max="1.0" step="0.05">
+        <label for="roughness">Roughness</label>
+      </div>
+
+      <div>
+        <input type="range" id="metalness" min="0.0" max="1.0" step="0.05">
+        <label for="metalness">Metalness</label>
+      </div>
+
+      <div>
+        <input type="range" id="tex-octaves" min="1" max="32" step="1">
+        <label for="tex-octaves">Noise octaves</label>
+      </div>
+
+      <div>
+        <input type="range" id="tex-freq" min="1.0" max="10.0" step="0.5">
+        <label for="tex-freq">Initial frequency</label>
+      </div>
+
+      <div>
+        <input type="range" id="tex-amp" min="1.0" max="5.0" step="0.5">
+        <label for="tex-amp">Initial amplitude</label>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
