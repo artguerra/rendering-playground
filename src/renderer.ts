@@ -15,6 +15,7 @@ export interface GPUApp extends GPUAppBase {
   shaderModule: GPUShaderModule;
   rasterPipeline: GPURenderPipeline;
   raytracingPipeline: GPURenderPipeline;
+  wireframePipeline: GPURenderPipeline;
   bindGroupLayout: GPUBindGroupLayout;
 }
 
@@ -54,6 +55,8 @@ export function initRenderPipeline(app: GPUAppBase): GPUApp {
       { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      { binding: 7, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      { binding: 8, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
     ]
   });
 
@@ -84,6 +87,29 @@ export function initRenderPipeline(app: GPUAppBase): GPUApp {
     },
   });
 
+  const wireframePipeline = app.device.createRenderPipeline({
+    label: "wireframe pipeline",
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "wireframe_vertex_main",
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "wireframe_fragment_main",
+      targets: [{ format: app.canvasFormat }],
+    },
+    primitive: {
+      topology: "line-list",
+      cullMode: "none",
+    },
+    depthStencil: {
+      format: "depth24plus",
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  });
+
   const raytracingPipeline = app.device.createRenderPipeline({
     label: "raytracing pipeline",
     layout: pipelineLayout,
@@ -102,7 +128,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUApp {
     },
     depthStencil: {
       format: "depth24plus",
-      depthWriteEnabled: true,
+      depthWriteEnabled: false,
       depthCompare: "less",
     },
   });
@@ -113,7 +139,8 @@ export function initRenderPipeline(app: GPUAppBase): GPUApp {
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
   });
 
-  return { ...app, shaderModule, bindGroupLayout, rasterPipeline, raytracingPipeline, depthTexture };
+  return { ...app, shaderModule, bindGroupLayout,
+    rasterPipeline, raytracingPipeline, wireframePipeline, depthTexture };
 }
 
 export function createSceneBindGroup(app: GPUApp, scene: Scene): GPUBindGroup {
@@ -131,6 +158,8 @@ export function createSceneBindGroup(app: GPUApp, scene: Scene): GPUBindGroup {
       { binding: 4, resource: { buffer: scene.instanceBuffer! } },
       { binding: 5, resource: { buffer: scene.matBuffer! } },
       { binding: 6, resource: { buffer: scene.lightBuffer! } },
+      { binding: 7, resource: { buffer: scene.bvhBuffer! } },
+      { binding: 8, resource: { buffer: scene.sortedIndicesBuffer! } },
     ],
   });
 }
@@ -168,10 +197,14 @@ export function render(app: GPUApp, scene: Scene, bindGroup: GPUBindGroup, useRa
       pass.draw(numIndices, 1, 0, i); 
     }
   }
+
+  if (scene.bvh) {
+    pass.setPipeline(app.wireframePipeline);
+    pass.draw(24, scene.bvh!.size, 0, 0);
+  }
   
   pass.end();
 
   const commandBuffer = encoder.finish();
   app.device.queue.submit([commandBuffer]);
 }
-

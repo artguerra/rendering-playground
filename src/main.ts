@@ -118,7 +118,9 @@ async function main() {
   ];
 
   const scene = new Scene(camera, instances, materials, lights);
+  scene.computeBVH();
   scene.createBuffers(app);
+
   const bindGroup = createSceneBindGroup(app, scene);
 
   initEvents(app, scene);

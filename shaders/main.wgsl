@@ -39,6 +39,13 @@ struct Mesh {
   material_idx: u32, // index over the material buffer
 }
 
+struct BVHNode {
+  min_corner: vec3<f32>,
+  left_first: u32, // left node if interior, first primitive offset if leaf
+  max_corner: vec3<f32>,
+  num_primitives: u32, // 0 if interior
+}
+
 struct Scene {
   camera: Camera,
   canvas_width: f32,
@@ -68,17 +75,11 @@ var<storage, read> materials: array<Material>;
 @group(0) @binding(6)
 var<storage, read> light_sources: array<LightSource>;
 
-struct RasterVertexInput {
-  @builtin(vertex_index) vertex_idx: u32,
-  @builtin(instance_index) mesh_idx: u32
-}
+@group(0) @binding(7)
+var<storage, read> bvh_nodes: array<BVHNode>;
 
-struct RasterVertexOutput {
-  @builtin(position) builtin_pos: vec4f,
-  @location(0) position: vec3f,
-  @location(1) normal: vec3f,
-  @location(2) @interpolate(flat) material_idx: u32,
-}
+@group(0) @binding(8)
+var<storage, read> sorted_triangles: array<u32>; // triangles sorted according to bvh
 
 // ----------------------------- helper functions -----------------------------
 
@@ -375,7 +376,67 @@ fn compute_radiance(
   return color_response;
 }
 
+// ----------------------------- wireframe (debug) shaders -------------------------
+
+struct WireframeVertexInput {
+  @builtin(vertex_index) vertex_idx: u32,
+  @builtin(instance_index) obj_idx: u32,
+}
+
+struct WireframeVertexOutput {
+  @builtin(position) position: vec4f,
+}
+
+fn get_box_corner(first: vec3f, second: vec3f, i: u32) -> vec3f {
+  switch i {
+    case 0: { return first; }
+    case 1: { return vec3f(first.x, first.y, second.z); }
+    case 2: { return vec3f(second.x, first.y, second.z); }
+    case 3: { return vec3f(second.x, first.y, first.z); }
+    case 4: { return vec3f(first.x, second.y, first.z); }
+    case 5: { return vec3f(first.x, second.y, second.z); }
+    case 6: { return second; }
+    case 7: { return vec3f(second.x, second.y, first.z); }
+    case default: { return first; }
+  }
+}
+
+@vertex
+fn wireframe_vertex_main(input: WireframeVertexInput) -> WireframeVertexOutput {
+  let box_indices= array<u32, 24>(
+    0, 1, 1, 2, 2, 3, 3, 0,
+    0, 4, 1, 5, 2, 6, 3, 7,
+    4, 5, 5, 6, 6, 7, 7, 4
+  );
+
+  let min_corner = bvh_nodes[input.obj_idx].min_corner;
+  let max_corner = bvh_nodes[input.obj_idx].max_corner;
+
+  let idx = box_indices[input.vertex_idx];
+  let cur_corner = vec4f(get_box_corner(min_corner, max_corner, idx), 1.0);
+
+  let pos = scene.camera.proj_mat * scene.camera.view_mat * scene.camera.model_mat * cur_corner;
+  return WireframeVertexOutput(pos);
+}
+
+@fragment
+fn wireframe_fragment_main(input: WireframeVertexOutput) -> @location(0) vec4f {
+  return vec4f(0.0, 1.0, 0.0, 1.0);
+}
+
 // ----------------------------- rasterization shaders ----------------------------- 
+
+struct RasterVertexInput {
+  @builtin(vertex_index) vertex_idx: u32,
+  @builtin(instance_index) mesh_idx: u32,
+}
+
+struct RasterVertexOutput {
+  @builtin(position) builtin_pos: vec4f,
+  @location(0) position: vec3f,
+  @location(1) normal: vec3f,
+  @location(2) @interpolate(flat) material_idx: u32,
+}
 
 @vertex
 fn raster_vertex_main(input: RasterVertexInput) -> RasterVertexOutput {
@@ -458,6 +519,21 @@ fn ray_at(uv: vec2f, camera: Camera) -> Ray {
   return ray;
 }
 
+fn intersect_aabb(ray: Ray, min_corner: vec3f, max_corner: vec3f) -> bool {
+  let inv_dir = 1.0 / ray.direction;
+
+  let t0 = (min_corner - ray.origin) * inv_dir;
+  let t1 = (max_corner - ray.origin) * inv_dir;
+
+  let t_entry = min(t0, t1);
+  let t_exit = max(t0, t1);
+
+  let t_entry_max = max(max(t_entry.x, t_entry.y), t_entry.z);
+  let t_exit_min = min(min(t_exit.x, t_exit.y), t_exit.z);
+
+  return t_entry_max <= t_exit_min;
+}
+
 fn intersect_triangle(
   ray: Ray, 
   p0: vec3f, 
@@ -512,7 +588,9 @@ fn ray_trace(
 
   for (var mesh_idx = 0u; mesh_idx < num_meshes; mesh_idx++) {
     let mesh = meshes[mesh_idx];
-      
+
+    return intersect_aabb(ray, bvh_nodes[0].min_corner, bvh_nodes[0].max_corner);
+
     for (var tri_index = 0u; tri_index < mesh.num_triangles; tri_index++) {
       let triangle = get_triangle(mesh.tri_offset + tri_index);
       
@@ -623,9 +701,9 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
   var hit: Hit;
 
   if (ray_trace(ray, MAX_DISTANCE, false, &hit) == true) {
-    color_response = shade_rt(hit);
+    // color_response = shade_rt(hit);
+    color_response = vec4f(1.0, 0.0, 0.0, 1.0);
   }
 
   return color_response;
 }
-

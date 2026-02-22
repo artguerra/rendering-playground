@@ -5,14 +5,16 @@ import { mergeMeshes, type MeshInstance, type MergedGeometry } from "./mesh";
 import type { GPUApp, GPUAppBase } from "./renderer";
 import type { LightSource, Material } from "./types";
 import { createGPUBuffer } from "./utils";
+import { BVHTree } from "./bvh";
 
 export class Scene {
   camera: Camera;
   instances: MeshInstance[];
   materials: Material[];
   lights: LightSource[];
+  bvh?: BVHTree;
   
-  mergedGeometry?: MergedGeometry;
+  mergedGeometry: MergedGeometry;
   time: number = 0;
 
   // GPU buffers
@@ -24,6 +26,8 @@ export class Scene {
   instanceBuffer?: GPUBuffer;
   matBuffer?: GPUBuffer;
   lightBuffer?: GPUBuffer;
+  bvhBuffer?: GPUBuffer;
+  sortedIndicesBuffer?: GPUBuffer;
 
   lightDataArray?: ArrayBuffer;
 
@@ -32,16 +36,26 @@ export class Scene {
     this.instances = instances;
     this.materials = materials;
     this.lights = lights;
+
+    this.mergedGeometry = mergeMeshes(this.instances);
+  }
+
+  computeBVH() {
+    this.bvh = new BVHTree(this.mergedGeometry);
+    this.bvh.buildRecursive(this.bvh.rootIdx);
   }
 
   createBuffers(app: GPUAppBase) {
-    this.mergedGeometry = mergeMeshes(this.instances);
     const storageUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
 
     this.posBuffer = createGPUBuffer(app.device, this.mergedGeometry.positions, storageUsage);
     this.normBuffer = createGPUBuffer(app.device, this.mergedGeometry.normals, storageUsage);
     this.triBuffer = createGPUBuffer(app.device, this.mergedGeometry.indices, storageUsage);
     this.instanceBuffer = createGPUBuffer(app.device, this.mergedGeometry.instances, storageUsage);
+
+    if (!this.bvh) throw new Error("BVH was not initialized.");
+    this.bvhBuffer = createGPUBuffer(app.device, this.bvh.exportBVH(), storageUsage);
+    this.sortedIndicesBuffer = createGPUBuffer(app.device, this.bvh.exportSortedIndices(), storageUsage);
 
     this.uniformBuffer = app.device.createBuffer({
       size: 88 * 4, // 88 floats in scene struct in shader
@@ -67,7 +81,7 @@ export class Scene {
     // 12 floats/u32s per light
     this.lightDataArray = new ArrayBuffer(this.lights.length * 48);
     this.packLightData();
-    
+
     this.lightBuffer = createGPUBuffer(app.device, new Uint8Array(this.lightDataArray), storageUsage);
 
     this.buffersInitialized = true;
