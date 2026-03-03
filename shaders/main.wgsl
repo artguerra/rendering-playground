@@ -478,6 +478,7 @@ fn raster_fragment_main(input: RasterVertexOutput) -> @location(0) vec4f {
 }
 
 // ---------------------------- ray tracing shaders ---------------------------- 
+const MAX_DISTANCE = 1e8;
 
 struct RayVertexInput {
   @builtin(vertex_index) vertex_idx: u32
@@ -524,9 +525,8 @@ fn ray_at(uv: vec2f, camera: Camera) -> Ray {
   return ray;
 }
 
-fn intersect_aabb(ray: Ray, min_corner: vec3f, max_corner: vec3f) -> bool {
+fn intersect_aabb(ray: Ray, min_corner: vec3f, max_corner: vec3f, max_t: f32) -> f32 {
   let inv_dir = 1.0 / ray.direction;
-
   let t0 = (min_corner - ray.origin) * inv_dir;
   let t1 = (max_corner - ray.origin) * inv_dir;
 
@@ -536,7 +536,11 @@ fn intersect_aabb(ray: Ray, min_corner: vec3f, max_corner: vec3f) -> bool {
   let t_entry_max = max(max(t_entry.x, t_entry.y), t_entry.z);
   let t_exit_min = min(min(t_exit.x, t_exit.y), t_exit.z);
 
-  return t_entry_max <= t_exit_min && t_exit_min >= 0;
+  if (t_entry_max <= t_exit_min && t_exit_min >= 0 && t_entry_max <= max_t) {
+    return max(0.0, t_entry_max);
+  }
+
+  return -1.0;
 }
 
 fn intersect_triangle(
@@ -592,6 +596,11 @@ fn ray_trace(
   var stack: array<u32, 32>;
   var stack_ptr = 0u;
 
+  let root = bvh_nodes[0];
+  if (intersect_aabb(ray, root.min_corner, root.max_corner, MAX_DISTANCE) < 0.0) {
+    return false;
+  }
+
   stack[stack_ptr] = 0u;
   stack_ptr++;
 
@@ -599,20 +608,41 @@ fn ray_trace(
     if (stack_ptr >= 31u) { break; }
 
     stack_ptr--;
-
     let node = bvh_nodes[stack[stack_ptr]];
-    if (!intersect_aabb(ray, node.min_corner, node.max_corner)) {
-      continue;
+
+    // track closest hit so far to cull boxes
+    var current_max_t = MAX_DISTANCE;
+    if (intersection_found && !any_hit) {
+      current_max_t = (*hit).t;
     }
 
-    // intersected aabb of bvh node. either internal or leaf
     if (node.num_primitives == 0) {
       // internal node
-      stack[stack_ptr] = node.left_first;
-      stack_ptr++;
+      let left_idx = node.left_first;
+      let right_idx = node.left_first + 1;
+      let left_node = bvh_nodes[left_idx];
+      let right_node = bvh_nodes[right_idx];
 
-      stack[stack_ptr] = node.left_first + 1;
-      stack_ptr++;
+      let dist_l = intersect_aabb(ray, left_node.min_corner, left_node.max_corner, current_max_t);
+      let dist_r = intersect_aabb(ray, right_node.min_corner, right_node.max_corner, current_max_t);
+
+      let hit_l = dist_l >= 0.0;
+      let hit_r = dist_r >= 0.0;
+
+      if (hit_l && hit_r) {
+        // order traversal according to distance
+        if (dist_l <= dist_r) {
+          stack[stack_ptr] = right_idx; stack_ptr++;
+          stack[stack_ptr] = left_idx; stack_ptr++; // left is going to be popped first
+        } else {
+          stack[stack_ptr] = left_idx; stack_ptr++;
+          stack[stack_ptr] = right_idx; stack_ptr++; // right is going to be popped first
+        }
+      } else if (hit_l) {
+        stack[stack_ptr] = left_idx; stack_ptr++;
+      } else if (hit_r) {
+        stack[stack_ptr] = right_idx; stack_ptr++;
+      }
     } else {
       // leaf node
       for (var i = 0u; i < node.num_primitives; i++) {
@@ -720,8 +750,6 @@ fn ray_vertex_main(input: RayVertexInput) -> RayVertexOutput {
 
 @fragment
 fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
-  const MAX_DISTANCE = 1e8;
-
   let coord = vec2f(input.frag_pos.x / scene.canvas_width, 1.0 - input.frag_pos.y / scene.canvas_height);
   let ray = ray_at(coord, scene.camera);
 
