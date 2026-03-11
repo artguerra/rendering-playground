@@ -123,7 +123,7 @@ fn sqr(x: f32) -> f32 {
 }
 
 fn attenuation(dist: f32) -> f32 {
-  return 1.0 / (1.0 + (dist / 4.0) + sqr(dist / 2.0));
+  return 1.0 / sqr(dist);
 }
 
 // -------------------------------------------- RNGs --------------------------------------------
@@ -375,6 +375,38 @@ fn brdf(
   return (f_d + f_s);
 }
 
+fn evaluate_brdf_pdf(wi: vec3f, wo: vec3f, n: vec3f, roughness: f32, p_spec: f32, p_diff: f32) -> f32 {
+  let n_dot_i = max(0.0, dot(n, wi));
+  if (n_dot_i <= 0.0) { return 0.0; }
+
+  let wh = normalize(wi + wo);
+  let n_dot_h = max(0.0, dot(n, wh));
+  let wo_dot_h = max(0.0, dot(wo, wh));
+  
+  // diffuse PDF (cosine distribution)
+  let pdf_d = n_dot_i * INV_PI;
+
+  // ggx PDF
+  var pdf_s = 0.0;
+  if (wo_dot_h > 0.0) {
+    let alpha = roughness * roughness;
+    let d = trowbridge_reitz_ndf(wh, n, alpha);
+    pdf_s = (d * n_dot_h) / (4.0 * wo_dot_h);
+  }
+
+  return p_diff * pdf_d + p_spec * pdf_s;
+}
+
+// samples GGX NDF to generate a halfway vector
+fn sample_ggx_ndf(alpha: f32, u: vec2f) -> vec3f {
+  let a2 = sqr(alpha);
+  let cos_theta = sqrt(max(0.0, (1.0 - u.x) / (1.0 + (a2 - 1.0) * u.x)));
+  let sin_theta = sqrt(max(0.0, 1.0 - sqr(cos_theta)));
+  let phi = 2.0 * PI * u.y;
+
+  return vec3f(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
+}
+
 fn point_light_shade(
   position: vec3f, 
   normal: vec3f, 
@@ -528,7 +560,7 @@ fn raster_vertex_main(input: RasterVertexInput) -> RasterVertexOutput {
   output.builtin_pos = cam.proj_mat * cam.view_mat * p; // to fire rasterization
   output.position = p.xyz;
 
-  let n = cam.trans_inv_model_mat * vec4f(get_vert_normal(vert_index), 1.0);
+  let n = cam.trans_inv_model_mat * vec4f(get_vert_normal(vert_index), 0.0);
   output.normal = normalize(n.xyz);
   output.material_idx = mesh.material_idx; 
 
@@ -776,44 +808,64 @@ fn get_hit_vectors(hit: Hit, hit_pos: ptr<function, vec3f>, hit_normal: ptr<func
   ));
 }
 
-fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, rng: ptr<function, RngState>) -> vec4f {
+fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, p_spec: f32, p_diff: f32, rng: ptr<function, RngState>) -> vec4f {
   let mesh = meshes[hit.mesh_idx];
-  let tri = get_bvh_triangle(hit.tri_idx);
-  let uvw = vec3f(hit.u, hit.v, 1.0 - hit.u - hit.v);
-
+  let mat = materials[mesh.material_idx];
+  
   var position: vec3f;
   var world_normal: vec3f;
   get_hit_vectors(hit, &position, &world_normal);
 
   var color_response = vec3f(0.0);
   let wo = normalize(-incoming_ray_dir);
-  let num_lights = u32(scene.num_area_lights);
+  
+  let num_lights_f = f32(scene.num_area_lights);
+  if (num_lights_f == 0.0) { return vec4f(0.0, 0.0, 0.0, 1.0); }
 
-  for (var light_source_idx = 0u; light_source_idx < num_lights; light_source_idx++) {
-    let l = area_lights[light_source_idx];
+  // uniform light sampling
+  let light_idx = min(u32(rand(rng) * num_lights_f), u32(scene.num_area_lights) - 1u);
+  let l = area_lights[light_idx];
 
-    let u_rand = rand(rng);
-    let v_rand = rand(rng);
-    let light_point = l.position + (l.u * u_rand) + (l.v * v_rand);
+  let u_rand = rand(rng);
+  let v_rand = rand(rng);
+  let light_point = l.position + (l.u * u_rand) + (l.v * v_rand);
+  
+  let pos_to_light = light_point - position;
+  let di = length(pos_to_light);
+  let wi = pos_to_light / di;
 
-    if (bool(l.ray_traced_shadows) == true) {
+  let u_x_v = cross(l.u, l.v);
+  let light_normal = normalize(u_x_v);
+  let cos_light = dot(light_normal, -wi);
+  let n_dot_l = dot(world_normal, wi);
+
+  if (cos_light > 0.0 && n_dot_l > 0.0) {
+    let area = length(u_x_v);
+    
+    // solid angle pdf (dist^2) / (area * cos_light). 
+    let pdf_light = (di * di) / (area * cos_light) * (1.0 / num_lights_f);
+    let pdf_brdf = evaluate_brdf_pdf(wi, wo, world_normal, mat.roughness, p_spec, p_diff);
+
+    // MIS power heuristic
+    let mis_weight = (pdf_light * pdf_light) / (pdf_light * pdf_light + pdf_brdf * pdf_brdf);
+
+    var in_shadow = false;
+    if (bool(l.ray_traced_shadows)) {
       var shadow_ray: Ray;
       const SHADOW_BIAS = 0.0001;
-
-      let pos_to_light = l.position - position;
-      let light_dist = length(pos_to_light);
-
-      shadow_ray.direction = normalize(pos_to_light);
+      shadow_ray.direction = wi;
       shadow_ray.origin = position + SHADOW_BIAS * world_normal;
 
       var shadow_hit: Hit;
-      let in_shadow = ray_trace(shadow_ray, light_dist + EPSILON, true, &shadow_hit); // any hit
+      in_shadow = ray_trace(shadow_ray, di - EPSILON, true, &shadow_hit);
+    }
 
-      if (in_shadow == false || (in_shadow == true && shadow_hit.t > light_dist)) {
-        color_response += area_light_shade(position, world_normal, mesh.material_idx, light_source_idx, light_point, wo); 
-      }
-    } else {
-      color_response += area_light_shade(position, world_normal, mesh.material_idx, light_source_idx, light_point, wo);
+    if (!in_shadow) {
+      let fr = brdf(wi, wo, world_normal, mat.albedo, mat.roughness, mat.metalness);
+      let li = l.color * l.intensity; 
+      
+      // L = (BRDF * L_i * cos(theta)) / pdf_light * mis_weight
+      color_response += (fr * li * n_dot_l / pdf_light) * mis_weight;
     }
   }
 
@@ -838,7 +890,7 @@ fn ray_vertex_main(input: RayVertexInput) -> RayVertexOutput {
   return output;
 }
 
-const STRATIFIED_GRID_N = 16u;
+const STRATIFIED_GRID_N = 6u;
 const SPP: u32 = STRATIFIED_GRID_N * STRATIFIED_GRID_N;
 const MAX_DEPTH: u32 = 3u;
 
@@ -869,20 +921,31 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
 
     for (var depth = 0u; depth < MAX_DEPTH; depth++) {
       if (ray_trace(ray, MAX_DISTANCE, false, &hit) == true) {
-        sample_color += shade_rt(hit, ray.direction, &rng).xyz * throughput;
-
         let mesh = meshes[hit.mesh_idx];
         let mat = materials[mesh.material_idx];
+
         if (mat.material_type == 2u) {
-            if (depth == 0u) {
-              sample_color += mat.albedo * throughput;
-            }
-            break; 
+          if (depth == 0u) {
+            sample_color += mat.albedo * throughput;
+          }
+          break; 
         }
+
+        // MIS probabilities
+        // high specular sampling for metals 
+        // non-metals rely on roughness.
+        let specular_weight = mix(1.0 - mat.roughness, 1.0, mat.metalness);
+        let p_spec = clamp(specular_weight, 0.1, 0.9);
+        let p_diff = 1.0 - p_spec;
+
+        // direct lighting
+        sample_color += shade_rt(hit, ray.direction, p_spec, p_diff, &rng).xyz * throughput;
 
         var position: vec3f;
         var world_normal: vec3f;
         get_hit_vectors(hit, &position, &world_normal);
+
+        let wo = normalize(-ray.direction);
 
         // hemisphere ref frame
         var helper = vec3f(1.0, 0.0, 0.0);
@@ -892,31 +955,52 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
         let tangent = normalize(cross(helper, world_normal));
         let bitangent = cross(world_normal, tangent);
 
-        let u = rand(&rng);
-        let v = rand(&rng);
-        let sqrt_v = sqrt(v);
-        let cosine_pdf = vec3f(cos(2.0 * PI * u) * sqrt_v, sin(2.0 * PI * u) * sqrt_v, sqrt(1 - v));
+        var bounce_dir: vec3f;
+        let u1 = rand(&rng);
+        let u2 = rand(&rng);
+
+        // select specular or diffuse bounce
+        if (rand(&rng) < p_spec) {
+          // sample specular (ggx NDF)
+          let alpha = sqr(mat.roughness);
+          let wh_ts = sample_ggx_ndf(alpha, vec2f(u1, u2));
+          let wh = normalize(
+            wh_ts.x * tangent +
+            wh_ts.y * bitangent +
+            wh_ts.z * world_normal
+          );
+          bounce_dir = reflect(-wo, wh);
+        } else {
+          // sample diffuse (cosine pdf)
+          let sqrt_v = sqrt(u2);
+          let cosine_dir = vec3f(cos(2.0 * PI * u1) * sqrt_v, sin(2.0 * PI * u1) * sqrt_v, sqrt(1.0 - u2));
+          bounce_dir = normalize(cosine_dir.x * tangent + cosine_dir.y * bitangent + cosine_dir.z * world_normal);
+        }
+
+        let n_dot_i = max(0.0, dot(world_normal, bounce_dir));
+        
+        // calculate BRDF pdf based on the IS probabilities above
+        let pdf_brdf = evaluate_brdf_pdf(bounce_dir, wo, world_normal, mat.roughness, p_spec, p_diff);
+        if (pdf_brdf <= 0.0 || n_dot_i <= 0.0) { break; }
+
+        let fr = brdf(bounce_dir, wo, world_normal, mat.albedo, mat.roughness, mat.metalness);
+        
+        // throughput calculation = brdf * cos / pdf
+        throughput *= (fr * n_dot_i) / pdf_brdf;
 
         const BOUNCE_RAY_BIAS = 0.0001;
-        let bounce_dir = normalize(cosine_pdf.x * tangent + cosine_pdf.z * world_normal + cosine_pdf.y * bitangent);
         ray.origin = position + BOUNCE_RAY_BIAS * world_normal;
         ray.direction = bounce_dir;
 
-        throughput *= mat.albedo;
-
         // russian roulette
-        // only apply after 3rd bounce
         if (depth > 2u) {
           var p = max(throughput.x, max(throughput.y, throughput.z));
-          p = clamp(p, 0.05, 1.0); 
-            
-          if (rand(&rng) > p) {
-            break;
-          }
+          p = min(p, 0.99); 
+          if (rand(&rng) > p) { break; }
           throughput /= p; 
         }
       } else {
-        break; // ray missed
+        break; // ray missed the scene
       }
     }
 

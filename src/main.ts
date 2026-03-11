@@ -105,7 +105,7 @@ async function main() {
     {
       type: "area",
       position: vec3.create(-0.1, 0.99, -0.1),
-      intensity: 100,
+      intensity: 50,
       u: vec3.create(0.2, 0.0, 0.0),
       v: vec3.create(0.0, 0.0, 0.2),
       color: vec3.create(1.0, 1.0, 1.0),
