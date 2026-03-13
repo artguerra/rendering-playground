@@ -69,16 +69,14 @@ interface SAHBin {
 }
 
 class BVHPrimitive {
-  index: number; // index in triangle indices array
-  meshIdx: number;
+  index: number; // original index in triangle indices array
   v0: Vec3;
   v1: Vec3;
   v2: Vec3;
   centroid: Vec3;
 
-  constructor(index: number, meshIdx: number, v0: Vec3, v1: Vec3, v2: Vec3) {
+  constructor(index: number, v0: Vec3, v1: Vec3, v2: Vec3) {
     this.index = index;
-    this.meshIdx = meshIdx;
     this.v0 = v0;
     this.v1 = v1;
     this.v2 = v2;
@@ -93,19 +91,17 @@ class BVHNode {
 
   numPrimitives: number | null; // null if interior
   firstPrimitiveOffset: number | null; // null if interior
-  splitAxis: number | null; // null if leaf
+  skipLink: number = 0;
 
   constructor(
     left: number | null, right: number | null,
-    numPrimitives: number | null, primitiveOffset: number | null,
-    splitAxis: number | null
+    numPrimitives: number | null, primitiveOffset: number | null
   ) {
     this.bounds = null;
     this.leftChild = left;
     this.rightChild = right;
     this.numPrimitives = numPrimitives;
     this.firstPrimitiveOffset = primitiveOffset;
-    this.splitAxis = splitAxis;
   }
 }
 
@@ -118,22 +114,20 @@ export class BVHTree {
   nodes: BVHNode[];
   size: number;
 
-  indices: Uint32Array;
+  triOffset: number;
   primitives: BVHPrimitive[];
 
-  constructor(mesh: MergedGeometry, heuristic: BVHHeuristic = "SAH") {
-    this.size = 0;
+  constructor(mesh: MergedGeometry, triOffset: number, triCount: number, vertexOffset: number, heuristic: BVHHeuristic = "SAH") {
+    this.size = 0; 
+    
     this.heuristic = heuristic;
-    this.indices = mesh.indices;
+    this.triOffset = triOffset;
+    
+    this.primitives = new Array(triCount);
+    this.nodes = new Array(2 * triCount - 1);
 
-    const numTris = mesh.indices.length / 3;
-    this.primitives = new Array(numTris);
-    this.nodes = new Array(2 * numTris - 1);
-
-    for (let i = 0; i < numTris; ++i) {
-      const meshIdx = mesh.primitiveMeshIndices[i];
-      const baseIdx = 3 * i;
-      const vertexOffset = mesh.instances[meshIdx * 4]; // mesh vertex offset
+    for (let i = 0; i < triCount; ++i) {
+      const baseIdx = (triOffset + i) * 3;
 
       const i0 = (mesh.indices[baseIdx] + vertexOffset) * 3;
       const i1 = (mesh.indices[baseIdx + 1] + vertexOffset) * 3;
@@ -143,12 +137,11 @@ export class BVHTree {
       const v1 = vec3.create(mesh.positions[i1], mesh.positions[i1 + 1], mesh.positions[i1 + 2]);
       const v2 = vec3.create(mesh.positions[i2], mesh.positions[i2 + 1], mesh.positions[i2 + 2]);
 
-      this.primitives[i] = new BVHPrimitive(baseIdx, meshIdx, v0, v1, v2);
+      this.primitives[i] = new BVHPrimitive(baseIdx, v0, v1, v2);
     }
 
-    this.createLeaf(numTris, 0);
+    this.createLeaf(triCount, 0);
     this.updateBounds(this.rootIdx);
-    this.size = 1;
   }
 
   buildRecursive(nodeIdx: number) {
@@ -306,41 +299,44 @@ export class BVHTree {
   }
 
   private createLeaf(numPrimitives: number, primitiveOffset: number): number {
-    this.nodes[this.size] = new BVHNode(null, null, numPrimitives, primitiveOffset, null);
+    this.nodes[this.size] = new BVHNode(null, null, numPrimitives, primitiveOffset);
 
     return this.size++;
   }
 
-  exportBVH(): ArrayBuffer {
-    const bytesPerNode = 8;
-    const buffer = new ArrayBuffer(this.size * bytesPerNode * 4);
-    const f32View = new Float32Array(buffer);
-    const u32View = new Uint32Array(buffer);
-
-    for (let i = 0; i < this.size; ++i) {
-      const node = this.nodes[i];
-      const idx = i * bytesPerNode;
-
-      f32View.set(node.bounds!.minCorner, idx);
-      u32View[idx + 3] = node.leftChild !== null ? node.leftChild : node.firstPrimitiveOffset!;
-      f32View.set(node.bounds!.maxCorner, idx + 4);
-      u32View[idx + 7] = node.numPrimitives !== null ? node.numPrimitives : 0;
+  reorderIndices(originalIndices: Uint32Array) {
+    const newIndices = new Uint32Array(this.primitives.length * 3);
+    for (let i = 0; i < this.primitives.length; ++i) {
+      const oldBase = this.primitives[i].index; 
+      newIndices[i * 3 + 0] = originalIndices[oldBase + 0];
+      newIndices[i * 3 + 1] = originalIndices[oldBase + 1];
+      newIndices[i * 3 + 2] = originalIndices[oldBase + 2];
     }
-
-    return buffer;
+    for (let i = 0; i < newIndices.length; ++i) {
+      originalIndices[this.triOffset * 3 + i] = newIndices[i];
+    }
   }
 
-  exportSortedIndices(): Uint32Array<ArrayBuffer> {
-    const sorted = new Uint32Array(this.primitives.length * 4);
+  flatten(globalOffset: number): BVHNode[] {
+    const flat: BVHNode[] = [];
 
-    for (let i = 0; i < this.primitives.length; ++i) {
-      const originalBase = this.primitives[i].index;
-      sorted[4 * i] = this.indices[originalBase];
-      sorted[4 * i + 1] = this.indices[originalBase + 1];
-      sorted[4 * i + 2] = this.indices[originalBase + 2];
-      sorted[4 * i + 3] = this.primitives[i].meshIdx;
-    }
+    const traverse = (nodeIdx: number) => {
+      const node = this.nodes[nodeIdx];
+      flat.push(node);
+
+      if (node.numPrimitives !== null) {
+        // leaf: the skip link stores the absolute triangle offset
+        node.skipLink = this.triOffset + node.firstPrimitiveOffset!;
+      } else {
+        // interior: left child is implicitly next. traverse left, then right.
+        traverse(node.leftChild!);
+        traverse(node.rightChild!);
+        
+        node.skipLink = globalOffset + flat.length; 
+      }
+    };
     
-    return sorted;
+    traverse(this.rootIdx);
+    return flat;
   }
 }

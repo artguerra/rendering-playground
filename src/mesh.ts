@@ -16,20 +16,17 @@ export interface MergedGeometry {
   normals: Float32Array<ArrayBuffer>;
   indices: Uint32Array<ArrayBuffer>;
   instances: Uint32Array<ArrayBuffer>; // packed data for WGSL: array<Mesh>
-  primitiveMeshIndices: Uint32Array<ArrayBuffer>;
 }
 
 export function mergeMeshes(meshInstances: MeshInstance[]): MergedGeometry {
   const numVertices = meshInstances.reduce((acc, cur) => acc + cur.mesh.positions.length, 0);
   const numIndices = meshInstances.reduce((acc, cur) => acc + cur.mesh.indices.length, 0);
-  const numTris = numIndices / 3;
 
   const merged: MergedGeometry = {
     positions: new Float32Array(numVertices),
     normals: new Float32Array(numVertices),
     indices: new Uint32Array(numIndices),
-    instances: new Uint32Array(meshInstances.length * 4), // 4 u32s per instance
-    primitiveMeshIndices: new Uint32Array(numTris),
+    instances: new Uint32Array(meshInstances.length * 8), // THE FIX: 8 u32s per instance!
   };
 
   let posOffset = 0;
@@ -43,14 +40,18 @@ export function mergeMeshes(meshInstances: MeshInstance[]): MergedGeometry {
     merged.positions.set(mesh.positions, posOffset);
     merged.normals.set(mesh.normals, posOffset);
     merged.indices.set(mesh.indices, idxOffset);
-    merged.primitiveMeshIndices.fill(i, triOffset, triOffset + triCount);
 
     const vertexOffset = posOffset / 3;
-    const instanceIdx = i * 4;
+    const instanceIdx = i * 8; // 8-slot stride
+    
     merged.instances[instanceIdx + 0] = vertexOffset; // posOffset
     merged.instances[instanceIdx + 1] = triOffset; // triOffset
     merged.instances[instanceIdx + 2] = triCount; // numOfTriangles
     merged.instances[instanceIdx + 3] = materialIndex; // materialIndex
+    merged.instances[instanceIdx + 4] = 0; // bvh_root, filled by bvh
+    merged.instances[instanceIdx + 5] = 0; // bvh_count, filled by bvh
+    merged.instances[instanceIdx + 6] = 0; // padding
+    merged.instances[instanceIdx + 7] = 0; // padding
 
     posOffset += mesh.positions.length;
     idxOffset += mesh.indices.length;

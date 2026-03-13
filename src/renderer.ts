@@ -40,11 +40,7 @@ export async function initWebGPU(canvas: HTMLCanvasElement): Promise<GPUAppBase>
   });
   if (!adapter) throw new Error("No adapter available for WebGPU.");
 
-  const device = await adapter.requestDevice({
-    requiredLimits: {
-      maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
-    }
-  });
+  const device = await adapter.requestDevice();
   const context = canvas.getContext("webgpu") as GPUCanvasContext;
   const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 
@@ -77,9 +73,8 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
       { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 3, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 6, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "read-only" } },
-      { binding: 7, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "write-only" } },
+      { binding: 5, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "read-only" } },
+      { binding: 6, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "write-only" } },
     ]
   });
 
@@ -209,9 +204,8 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
       { binding: 2, resource: { buffer: scene.triBuffer! } },
       { binding: 3, resource: { buffer: scene.instanceBuffer! } },
       { binding: 4, resource: { buffer: scene.bvhBuffer! } },
-      { binding: 5, resource: { buffer: scene.sortedIndicesBuffer! } },
-      { binding: 6, resource: app.accumulationRead.createView() },
-      { binding: 7, resource: app.accumulationWrite.createView() },
+      { binding: 5, resource: app.accumulationRead.createView() },
+      { binding: 6, resource: app.accumulationWrite.createView() },
     ],
   });
 
@@ -224,9 +218,8 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
       { binding: 2, resource: { buffer: scene.triBuffer! } },
       { binding: 3, resource: { buffer: scene.instanceBuffer! } },
       { binding: 4, resource: { buffer: scene.bvhBuffer! } },
-      { binding: 5, resource: { buffer: scene.sortedIndicesBuffer! } },
-      { binding: 6, resource: app.accumulationWrite.createView() },
-      { binding: 7, resource: app.accumulationRead.createView() },
+      { binding: 5, resource: app.accumulationWrite.createView() },
+      { binding: 6, resource: app.accumulationRead.createView() },
     ],
   });
 
@@ -278,9 +271,10 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     }
   }
 
-  // if (scene.bvh) {
+  // if (scene.bvhDataArray) {
   //   pass.setPipeline(app.wireframePipeline);
-  //   pass.draw(24, scene.bvh!.size, 0, 0);
+  //   const numNodes = scene.bvhDataArray.byteLength / 32;
+  //   pass.draw(24, numNodes, 0, 0);
   // }
   
   pass.end();

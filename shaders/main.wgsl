@@ -46,13 +46,16 @@ struct Mesh {
   tri_offset: u32, // in triangles
   num_triangles: u32,  
   material_idx: u32, // index over the material buffer
+  bvh_root: u32,
+  bvh_count: u32,
+  _pad: vec2<u32>,
 }
 
 struct BVHNode {
   min_corner: vec3<f32>,
-  left_first: u32, // left node if interior, first primitive offset if leaf
+  primitive_count: u32, // 0 if interior
   max_corner: vec3<f32>,
-  num_primitives: u32, // 0 if interior
+  skip_link: u32, // if leaf: first triangle index. if interior: miss link
 }
 
 struct Scene {
@@ -89,12 +92,9 @@ var<storage, read> meshes: array<Mesh>;
 var<storage, read> bvh_nodes: array<BVHNode>;
 
 @group(1) @binding(5)
-var<storage, read> sorted_triangles: array<u32>; // triangles sorted according to bvh + mesh idx (i0, i1, i2, im)
-
-@group(1) @binding(6)
 var accumulation_prev: texture_storage_2d<rgba32float, read>;
 
-@group(1) @binding(7)
+@group(1) @binding(6)
 var accumulation_next: texture_storage_2d<rgba32float, write>;
 
 @group(2) @binding(0)
@@ -118,11 +118,6 @@ fn get_vert_normal(vert_index: u32) -> vec3f {
 fn get_triangle(tri_idx: u32) -> vec3u {
   let idx = 3u * tri_idx;
   return vec3u(triangles[idx], triangles[idx + 1u], triangles[idx + 2u]);
-}
-
-fn get_bvh_triangle(tri_idx: u32) -> vec4u {
-  let idx = 4u * tri_idx;
-  return vec4u(sorted_triangles[idx], sorted_triangles[idx + 1u], sorted_triangles[idx + 2u], sorted_triangles[idx + 3u]);
 }
 
 fn sqr(x: f32) -> f32 { 
@@ -503,6 +498,7 @@ struct WireframeVertexInput {
 
 struct WireframeVertexOutput {
   @builtin(position) position: vec4f,
+  @location(0) color: vec3f,
 }
 
 fn get_box_corner(first: vec3f, second: vec3f, i: u32) -> vec3f {
@@ -527,19 +523,25 @@ fn wireframe_vertex_main(input: WireframeVertexInput) -> WireframeVertexOutput {
     4, 5, 5, 6, 6, 7, 7, 4
   );
 
-  let min_corner = bvh_nodes[input.obj_idx].min_corner;
-  let max_corner = bvh_nodes[input.obj_idx].max_corner;
+  let node = bvh_nodes[input.obj_idx];
+  let min_corner = node.min_corner;
+  let max_corner = node.max_corner;
 
   let idx = box_indices[input.vertex_idx];
   let cur_corner = vec4f(get_box_corner(min_corner, max_corner, idx), 1.0);
-
   let pos = scene.camera.proj_mat * scene.camera.view_mat * scene.camera.model_mat * cur_corner;
-  return WireframeVertexOutput(pos);
+
+  var color = vec3f(0.0, 1.0, 0.0); 
+  if (node.primitive_count > 0u) {
+    color = vec3f(1.0, 0.0, 0.0); 
+  }
+
+  return WireframeVertexOutput(pos, color);
 }
 
 @fragment
 fn wireframe_fragment_main(input: WireframeVertexOutput) -> @location(0) vec4f {
-  return vec4f(0.0, 1.0, 0.0, 1.0);
+  return vec4f(input.color, 1.0);
 }
 
 // ----------------------------- rasterization shaders ----------------------------- 
@@ -708,101 +710,81 @@ fn intersect_triangle(
 
 fn ray_trace(
   ray: Ray, 
-  max_distance: f32, // ignore intersections found further away
-  any_hit: bool, // return as soon as an intersection is found if true
-  hit: ptr<function, Hit> // filled only if an intersection is found and any_hit is false
+  max_distance: f32, 
+  any_hit: bool, 
+  hit: ptr<function, Hit>
 ) -> bool {
   var intersection_found = false;
-  var stack: array<u32, 32>;
-  var stack_ptr = 0u;
 
-  let root = bvh_nodes[0];
-  if (intersect_aabb(ray, root.min_corner, root.max_corner, MAX_DISTANCE) < 0.0) {
-    return false;
-  }
+  for (var m = 0u; m < u32(scene.num_meshes); m++) {
+    let mesh = meshes[m];
+    var node_idx = mesh.bvh_root;
+    let end_idx = mesh.bvh_root + mesh.bvh_count;
 
-  stack[stack_ptr] = 0u;
-  stack_ptr++;
+    while (node_idx < end_idx) {
+      let node = bvh_nodes[node_idx];
 
-  while(stack_ptr > 0u) {
-    if (stack_ptr >= 31u) { break; }
-
-    stack_ptr--;
-    let node = bvh_nodes[stack[stack_ptr]];
-
-    // track closest hit so far to cull boxes
-    var current_max_t = MAX_DISTANCE;
-    if (intersection_found && !any_hit) {
-      current_max_t = (*hit).t;
-    }
-
-    if (node.num_primitives == 0) {
-      // internal node
-      let left_idx = node.left_first;
-      let right_idx = node.left_first + 1;
-      let left_node = bvh_nodes[left_idx];
-      let right_node = bvh_nodes[right_idx];
-
-      let dist_l = intersect_aabb(ray, left_node.min_corner, left_node.max_corner, current_max_t);
-      let dist_r = intersect_aabb(ray, right_node.min_corner, right_node.max_corner, current_max_t);
-
-      let hit_l = dist_l >= 0.0;
-      let hit_r = dist_r >= 0.0;
-
-      if (hit_l && hit_r) {
-        // order traversal according to distance
-        if (dist_l <= dist_r) {
-          stack[stack_ptr] = right_idx; stack_ptr++;
-          stack[stack_ptr] = left_idx; stack_ptr++; // left is going to be popped first
-        } else {
-          stack[stack_ptr] = left_idx; stack_ptr++;
-          stack[stack_ptr] = right_idx; stack_ptr++; // right is going to be popped first
-        }
-      } else if (hit_l) {
-        stack[stack_ptr] = left_idx; stack_ptr++;
-      } else if (hit_r) {
-        stack[stack_ptr] = right_idx; stack_ptr++;
+      var current_max_t = MAX_DISTANCE;
+      if (intersection_found && !any_hit) {
+        current_max_t = (*hit).t;
       }
-    } else {
-      // leaf node
-      for (var i = 0u; i < node.num_primitives; i++) {
-        let tri_idx = node.left_first + i;
 
-        let tri_info = get_bvh_triangle(tri_idx);
-        let mesh_off = meshes[tri_info.w].pos_offset;
+      let dist = intersect_aabb(ray, node.min_corner, node.max_corner, current_max_t);
 
-        if (any_hit == true && materials[meshes[tri_info.w].material_idx].material_type == 2u) {
-          continue; 
-        } 
-        
-        var tri_hit: Hit;
-        tri_hit.tri_idx = tri_idx;
-        tri_hit.mesh_idx = tri_info.w;
-        
-        let p0 = get_vert_pos(mesh_off + tri_info.x);
-        let p1 = get_vert_pos(mesh_off + tri_info.y);
-        let p2 = get_vert_pos(mesh_off + tri_info.z);
-        
-        if (intersect_triangle(ray, p0, p1, p2, true, 0.0, max_distance, &tri_hit) == true) {
-          if (!intersection_found || (intersection_found && tri_hit.t < (*hit).t)) {
-            if (any_hit == true) {
-              return true;
+      if (dist >= 0.0) {
+        if (node.primitive_count > 0u) {
+          // leaf node hit
+          let start_tri = node.skip_link; // skip_link holds absolute triangle index
+
+          for (var i = 0u; i < node.primitive_count; i++) {
+            let tri_idx = start_tri + i;
+            let tri = get_triangle(tri_idx);
+
+            let p0 = get_vert_pos(mesh.pos_offset + tri.x);
+            let p1 = get_vert_pos(mesh.pos_offset + tri.y);
+            let p2 = get_vert_pos(mesh.pos_offset + tri.z);
+
+            // shadow rays pass through emissive area lights
+            if (any_hit == true && materials[mesh.material_idx].material_type == 2u) {
+              continue; 
             }
 
-            *hit = tri_hit;
-            intersection_found = true;
+            var tri_hit: Hit;
+            tri_hit.tri_idx = tri_idx;
+            tri_hit.mesh_idx = m;
+
+            if (intersect_triangle(ray, p0, p1, p2, true, 0.0, max_distance, &tri_hit) == true) {
+              if (!intersection_found || (intersection_found && tri_hit.t < (*hit).t)) {
+                if (any_hit == true) { return true; }
+                *hit = tri_hit;
+                intersection_found = true;
+              }
+            }
           }
+
+          node_idx++; // go to next node after intersecting leaf primitives
+        } else {
+          // interior node hit
+          node_idx++; 
+        }
+      } else {
+        // missed node
+        if (node.primitive_count > 0u) {
+           node_idx++; // missed leaf, skip to next node
+        } else {
+           // skip subtree
+           node_idx = node.skip_link; 
         }
       }
     }
   }
-  
+
   return intersection_found;
 }
 
 fn get_hit_vectors(hit: Hit, hit_pos: ptr<function, vec3f>, hit_normal: ptr<function, vec3f>) {
   let mesh = meshes[hit.mesh_idx];
-  let tri = get_bvh_triangle(hit.tri_idx);
+  let tri = get_triangle(hit.tri_idx);
   let uvw = vec3f(hit.u, hit.v, 1.0 - hit.u - hit.v);
 
   *hit_pos = interpolate(

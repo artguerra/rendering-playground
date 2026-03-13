@@ -31,8 +31,9 @@ export class Scene {
   matBuffer?: GPUBuffer;
   pointLightBuffer?: GPUBuffer;
   areaLightBuffer?: GPUBuffer;
+
+  bvhDataArray?: ArrayBuffer;
   bvhBuffer?: GPUBuffer;
-  sortedIndicesBuffer?: GPUBuffer;
 
   pointLightDataArray?: ArrayBuffer;
   areaLightDataArray?: ArrayBuffer;
@@ -81,8 +82,47 @@ export class Scene {
   }
 
   computeBVH() {
-    this.bvh = new BVHTree(this.mergedGeometry);
-    this.bvh.buildRecursive(this.bvh.rootIdx);
+    const allNodes: any[] = [];
+
+    for (let i = 0; i < this.instances.length; i++) {
+      const vertexOffset = this.mergedGeometry.instances[i * 8 + 0];
+      const triOffset = this.mergedGeometry.instances[i * 8 + 1];
+      const triCount = this.mergedGeometry.instances[i * 8 + 2];
+
+      // build BVH for this specific mesh
+      const bvh = new BVHTree(this.mergedGeometry, triOffset, triCount, vertexOffset);
+      bvh.buildRecursive(bvh.rootIdx);
+
+      // sort the indices buffer for this mesh
+      bvh.reorderIndices(this.mergedGeometry.indices);
+
+      const bvhRoot = allNodes.length;
+      const flatNodes = bvh.flatten(bvhRoot);
+
+      allNodes.push(...flatNodes);
+
+      // set bvh root node for mesh
+      this.mergedGeometry.instances[i * 8 + 4] = bvhRoot;
+      this.mergedGeometry.instances[i * 8 + 5] = flatNodes.length;
+    }
+
+    // 8 bytes per node
+    this.bvhDataArray = new ArrayBuffer(allNodes.length * 8 * 4);
+    const f32View = new Float32Array(this.bvhDataArray);
+    const u32View = new Uint32Array(this.bvhDataArray);
+
+    for (let i = 0; i < allNodes.length; ++i) {
+      const node = allNodes[i];
+      const idx = i * 8;
+
+      f32View.set(node.bounds.minCorner, idx);
+      u32View[idx + 3] = node.numPrimitives !== null ? node.numPrimitives : 0;
+      f32View.set(node.bounds.maxCorner, idx + 4);
+
+      // for leaves, skipLink is the absolute triangle index. 
+      // for interiors, skipLink is relative, so we add the absolute bvhRoot to make it a global pointer!
+      u32View[idx + 7] = node.skipLink;
+    }
   }
 
   createBuffers(app: GPUAppBase) {
@@ -93,9 +133,8 @@ export class Scene {
     this.triBuffer = createGPUBuffer(app.device, this.mergedGeometry.indices, storageUsage);
     this.instanceBuffer = createGPUBuffer(app.device, this.mergedGeometry.instances, storageUsage);
 
-    if (!this.bvh) throw new Error("BVH was not initialized.");
-    this.bvhBuffer = createGPUBuffer(app.device, this.bvh.exportBVH(), storageUsage);
-    this.sortedIndicesBuffer = createGPUBuffer(app.device, this.bvh.exportSortedIndices(), storageUsage);
+    if (this.bvhBuffer?.size === 0) throw new Error("BVH was not initialized.");
+    this.bvhBuffer = createGPUBuffer(app.device, this.bvhDataArray!, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
 
     this.uniformBuffer = app.device.createBuffer({
       size: 92 * 4, // 92 floats in scene struct in shader
