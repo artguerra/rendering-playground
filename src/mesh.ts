@@ -26,7 +26,7 @@ export function mergeMeshes(meshInstances: MeshInstance[]): MergedGeometry {
     positions: new Float32Array(numVertices),
     normals: new Float32Array(numVertices),
     indices: new Uint32Array(numIndices),
-    instances: new Uint32Array(meshInstances.length * 8), // THE FIX: 8 u32s per instance!
+    instances: new Uint32Array(meshInstances.length * 8),
   };
 
   let posOffset = 0;

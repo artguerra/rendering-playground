@@ -11,8 +11,6 @@
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
-    "importsNotUsedAsValues": "error",
-    "preserveValueImports": true,
     "moduleDetection": "force",
     "noEmit": true,
 
@@ -23,7 +21,6 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
-    "keyofStringsOnly": true,
 
     /* path aliases */
     "baseUrl": ".",

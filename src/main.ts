@@ -3,7 +3,7 @@ import { vec3, type Vec3 } from "wgpu-matrix";
 import { Camera } from "./camera";
 import { initWebGPU, initRenderPipeline, buildSceneBindGroups, render, type GPUAppPipeline } from "./renderer";
 import { Scene } from "./scene";
-import { type MeshInstance, createBox, createQuad, createSphere, createCylinder } from "./mesh";
+import { type MeshInstance, createBox, createQuad } from "./mesh";
 import type { Material, LightSource } from "./types";
 
 const ui = {
