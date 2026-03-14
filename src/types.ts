@@ -1,4 +1,4 @@
-import type { Vec3 } from "wgpu-matrix";
+import type { Vec3 } from "./math";
 
 export type LightType = "point" | "area";
 
