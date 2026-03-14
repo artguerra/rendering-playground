@@ -1,10 +1,9 @@
-import { vec3 } from "wgpu-matrix";
-
-import { Camera } from "./camera";
-import { mergeMeshes, type MeshInstance, type MergedGeometry } from "./mesh";
 import type { GPUAppPipeline, GPUAppBase } from "./renderer";
 import type { AreaLight, LightSource, Material, PointLight } from "./types";
+import { type MeshInstance, type MergedGeometry, mergeMeshes } from "./mesh";
+import { vec3Add, vec3Normalize, vec3Cross } from "./math";
 import { createGPUBuffer } from "./utils";
+import { Camera } from "./camera";
 import { BVHTree } from "./bvh";
 
 export class Scene {
@@ -16,6 +15,7 @@ export class Scene {
   areaLights: AreaLight[] = [];
 
   bvh?: BVHTree;
+  viewBvh: boolean = false;
   
   mergedGeometry: MergedGeometry;
   toneMappingEnabled: boolean = false;
@@ -56,19 +56,19 @@ export class Scene {
       const matIdx = this.materials.length;
       
       this.materials.push({
-        albedo: vec3.create(l.color[0], l.color[1], l.color[2]),
+        albedo: [l.color[0], l.color[1], l.color[2]],
         roughness: 1.0,
         metalness: 0.0,
         materialType: 2, // emissive
       });
 
       const p0 = l.position;
-      const p1 = vec3.add(p0, l.u);
-      const p2 = vec3.add(p1, l.v);
-      const p3 = vec3.add(p0, l.v);
+      const p1 = vec3Add(p0, l.u);
+      const p2 = vec3Add(p1, l.v);
+      const p3 = vec3Add(p0, l.v);
 
       // normal vector
-      const n = vec3.normalize(vec3.cross(l.u, l.v));
+      const n = vec3Normalize(vec3Cross(l.u, l.v));
 
       // add as a mesh
       this.instances.push({

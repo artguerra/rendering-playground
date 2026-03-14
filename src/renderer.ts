@@ -271,11 +271,11 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     }
   }
 
-  // if (scene.bvhDataArray) {
-  //   pass.setPipeline(app.wireframePipeline);
-  //   const numNodes = scene.bvhDataArray.byteLength / 32;
-  //   pass.draw(24, numNodes, 0, 0);
-  // }
+  if (scene.viewBvh && scene.bvhDataArray) {
+    pass.setPipeline(app.wireframePipeline);
+    const numNodes = scene.bvhDataArray.byteLength / 32;
+    pass.draw(24, numNodes, 0, 0);
+  }
   
   pass.end();
 

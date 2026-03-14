@@ -1,4 +1,4 @@
-import { vec3 } from "wgpu-matrix";
+import { type Vec3, vec3Add, vec3Sub, vec3Normalize, vec3Cross } from "./math";
 
 export interface Mesh {
   positions: Float32Array;
@@ -76,14 +76,14 @@ export function computeNormals(mesh: Mesh) {
     const v1 = mesh.indices[3 * i + 1];
     const v2 = mesh.indices[3 * i + 2];
 
-    const p0 = vec3.create(mesh.positions[3 * v0], mesh.positions[3 * v0 + 1], mesh.positions[3 * v0 + 2]);
-    const p1 = vec3.create(mesh.positions[3 * v1], mesh.positions[3 * v1 + 1], mesh.positions[3 * v1 + 2]);
-    const p2 = vec3.create(mesh.positions[3 * v2], mesh.positions[3 * v2 + 1], mesh.positions[3 * v2 + 2]);
+    const p0: Vec3 = [mesh.positions[3 * v0], mesh.positions[3 * v0 + 1], mesh.positions[3 * v0 + 2]];
+    const p1: Vec3 = [mesh.positions[3 * v1], mesh.positions[3 * v1 + 1], mesh.positions[3 * v1 + 2]];
+    const p2: Vec3 = [mesh.positions[3 * v2], mesh.positions[3 * v2 + 1], mesh.positions[3 * v2 + 2]];
 
-    const e01 = vec3.sub(p1, p0);
-    const e12 = vec3.sub(p2, p1);
-    const c = vec3.cross(e01, e12);
-    const nt = vec3.normalize(c);
+    const e01 = vec3Sub(p1, p0);
+    const e12 = vec3Sub(p2, p1);
+    const c = vec3Cross(e01, e12);
+    const nt = vec3Normalize(c);
 
     mesh.normals[3 * v0] += nt[0];
     mesh.normals[3 * v0 + 1] += nt[1];
@@ -97,19 +97,19 @@ export function computeNormals(mesh: Mesh) {
   }
 
   for (let i = 0; i < length / 3; ++i) {
-    const ni = vec3.create(mesh.normals[3 * i], mesh.normals[3 * i + 1], mesh.normals[3 * i + 2]);
-    const nni = vec3.normalize(ni);
+    const ni: Vec3 = [mesh.normals[3 * i], mesh.normals[3 * i + 1], mesh.normals[3 * i + 2]];
+    const nni = vec3Normalize(ni);
     mesh.normals[3 * i] = nni[0];
     mesh.normals[3 * i + 1] = nni[1];
     mesh.normals[3 * i + 2] = nni[2];
   }
 }
 
-export function createQuad(origin: number[], edge0: number[], edge1: number[]): Mesh {
-  const a = vec3.add(origin, edge0);
-  const b = vec3.add(a, edge1);
-  const c = vec3.add(origin, edge1);
-  const n = vec3.cross(edge0, edge1);
+export function createQuad(origin: Vec3, edge0: Vec3, edge1: Vec3): Mesh {
+  const a = vec3Add(origin, edge0);
+  const b = vec3Add(a, edge1);
+  const c = vec3Add(origin, edge1);
+  const n = vec3Cross(edge0, edge1);
   const indices = [0, 1, 2, 0, 2, 3];
   
   return {
@@ -120,7 +120,7 @@ export function createQuad(origin: number[], edge0: number[], edge1: number[]): 
 }
 
 export function createBox(
-  origin: number[], width: number, height: number, length: number, angle: number = 0.0
+  origin: Vec3, width: number, height: number, length: number, angle: number = 0.0
 ): Mesh {
   const positions: number[] = [];
   const normals: number[] = [];
@@ -194,7 +194,7 @@ export function createBox(
   };
 }
 
-export function createSphere(origin: number[], radius: number, latitudeRes: number, longitudeRes: number): Mesh {
+export function createSphere(origin: Vec3, radius: number, latitudeRes: number, longitudeRes: number): Mesh {
   const positions: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
@@ -235,7 +235,7 @@ export function createSphere(origin: number[], radius: number, latitudeRes: numb
 }
 
 export function createCylinder(
-  origin: number[], radius: number, height: number, radialSegments: number
+  origin: Vec3, radius: number, height: number, radialSegments: number
 ): Mesh {
   const positions: number[] = [];
   const normals: number[] = [];
@@ -261,7 +261,7 @@ export function createCylinder(
 
     const nx = (x1 + x2) / 2.0;
     const nz = (z1 + z2) / 2.0;
-    const n = vec3.normalize(vec3.create(nx, 0, nz));
+    const n = vec3Normalize([nx, 0, nz]);
     normals.push(n[0], n[1], n[2], n[0], n[1], n[2], n[0], n[1], n[2], n[0], n[1], n[2]);
 
     indices.push(

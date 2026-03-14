@@ -1,10 +1,13 @@
-import { vec3, type Vec3 } from "wgpu-matrix";
+import {
+  type GPUAppPipeline, initWebGPU, initRenderPipeline,
+  buildSceneBindGroups, render
+} from "./renderer";
 
-import { Camera } from "./camera";
-import { initWebGPU, initRenderPipeline, buildSceneBindGroups, render, type GPUAppPipeline } from "./renderer";
-import { Scene } from "./scene";
-import { type MeshInstance, createBox, createQuad } from "./mesh";
 import type { Material, LightSource } from "./types";
+import { type Vec3 } from "./math";
+import { Camera } from "./camera";
+import { Scene } from "./scene";
+import { type MeshInstance, createBox, createQuad, createSphere } from "./mesh";
 
 const ui = {
   canvas: document.querySelector("canvas") as HTMLCanvasElement,
@@ -14,6 +17,7 @@ const ui = {
   metalnessSlider: document.querySelector("#metalness") as HTMLInputElement,
   toneMappingCheck: document.querySelector("#toneMappingCheckbox") as HTMLInputElement,
   accumulationCheck: document.querySelector("#accumulationCheckbox") as HTMLInputElement,
+  viewBvhCheck: document.querySelector("#viewBvh") as HTMLInputElement,
   maxDepthSlider: document.querySelector("#rayDepth") as HTMLInputElement,
   stratifiedGridSlider: document.querySelector("#stratifiedGridN") as HTMLInputElement,
   sppText: document.querySelector("#spp") as HTMLSpanElement,
@@ -29,11 +33,11 @@ const keys: Record<string, boolean> = {
 };
 
 function hexToSRGB(hex: string): Vec3 {
-  return vec3.create(
+  return [
     parseInt(hex.slice(1, 3), 16) / 255,
     parseInt(hex.slice(3, 5), 16) / 255,
     parseInt(hex.slice(5, 7), 16) / 255,
-  );
+  ];
 }
 
 function initEvents(app: GPUAppPipeline, scene: Scene) {
@@ -106,6 +110,10 @@ function initEvents(app: GPUAppPipeline, scene: Scene) {
     scene.frameCount = 0.0;
   });
 
+  ui.viewBvhCheck.addEventListener("input", () => {
+    scene.viewBvh = ui.viewBvhCheck.checked;
+  });
+
   ui.maxDepthSlider.addEventListener("input", () => {
     const val = parseInt(ui.maxDepthSlider.value);
 
@@ -156,24 +164,24 @@ type SceneData = [Camera, Material[], LightSource[], MeshInstance[]];
 
 function createCornellBox(): SceneData {
   const camAspect = ui.canvas.width / ui.canvas.height;
-  const camera = new Camera(vec3.create(0.0, 0.6, 1.75), camAspect);
+  const camera = new Camera([0.0, 0.6, 1.75], camAspect);
 
   const materials: Material[] = [
-    { albedo: vec3.create(0.9, 0.9, 0.9), roughness: 1.0, metalness: 0.0, materialType: 0 }, // white wall
-    { albedo: vec3.create(0.9, 0.0, 0.0), roughness: 1.0, metalness: 0.0, materialType: 0 }, // red wall
-    { albedo: vec3.create(0.0, 0.9, 0.0), roughness: 1.0, metalness: 0.0, materialType: 0 }, // green wall
+    { albedo: [0.9, 0.9, 0.9], roughness: 1.0, metalness: 0.0, materialType: 0 }, // white wall
+    { albedo: [0.9, 0.0, 0.0], roughness: 1.0, metalness: 0.0, materialType: 0 }, // red wall
+    { albedo: [0.0, 0.9, 0.0], roughness: 1.0, metalness: 0.0, materialType: 0 }, // green wall
     { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 1.0, metalness: 0.0, materialType: 0 } // main object material
   ];
 
   const lights: LightSource[] = [
-    { type: "point", position: vec3.create(0.0, 0.99, -0.1), intensity: 1.5, color: vec3.create(1.0, 1.0, 1.0), rayTracedShadows: 1 },
+    { type: "point", position: [0.0, 0.99, -0.1], intensity: 1.5, color: [1.0, 1.0, 1.0], rayTracedShadows: 1 },
     {
       type: "area",
-      position: vec3.create(-0.1, 0.99, -0.1),
+      position: [-0.1, 0.99, -0.1],
       intensity: 40,
-      u: vec3.create(0.2, 0.0, 0.0),
-      v: vec3.create(0.0, 0.0, 0.2),
-      color: vec3.create(1.0, 1.0, 1.0),
+      u: [0.2, 0.0, 0.0],
+      v: [0.0, 0.0, 0.2],
+      color: [1.0, 1.0, 1.0],
       rayTracedShadows: 1
     },
   ];
@@ -184,6 +192,7 @@ function createCornellBox(): SceneData {
     { mesh: createQuad([-0.5, 0.0, -0.5], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), materialIndex: 0 }, // back wall
     { mesh: createQuad([-0.5, 0.0, -0.5], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]), materialIndex: 1 }, // left wall
     { mesh: createQuad([0.5, 0.0, -0.5], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), materialIndex: 2 },  // right wall
+    { mesh: createSphere([-0.3, 0.15, 0.3], 0.15, 32, 32), materialIndex: 3 },
     { mesh: createBox([-0.15, 0.0, -0.35], 0.3, 0.575, 0.3, Math.PI / 3), materialIndex: 3 },
     { mesh: createBox([0.1, 0.0, -0.05], 0.3, 0.3, 0.3, Math.PI / 9), materialIndex: 3 },
   ];

@@ -1,4 +1,4 @@
-import { vec3, type Vec3 } from "wgpu-matrix";
+import { type Vec3, vec3Add, vec3Max, vec3Min, vec3MulScalar, vec3Sub } from "./math";
 import type { MergedGeometry } from "./mesh";
 
 const MIN_VALUE = -1e30;
@@ -10,17 +10,17 @@ export class AABB {
 
   constructor(corner1?: Vec3, corner2?: Vec3) {
     if (!corner1 || !corner2) {
-      this.minCorner = vec3.create(MAX_VALUE, MAX_VALUE, MAX_VALUE);
-      this.maxCorner = vec3.create(MIN_VALUE, MIN_VALUE, MIN_VALUE);
+      this.minCorner = [MAX_VALUE, MAX_VALUE, MAX_VALUE];
+      this.maxCorner = [MIN_VALUE, MIN_VALUE, MIN_VALUE];
     } else {
-      this.minCorner = vec3.min(corner1, corner2);
-      this.maxCorner = vec3.max(corner1, corner2);
+      this.minCorner = vec3Max(corner1, corner2);
+      this.maxCorner = vec3Max(corner1, corner2);
     }
   }
 
   grow(point: Vec3) {
-    this.minCorner = vec3.min(this.minCorner, point);
-    this.maxCorner = vec3.max(this.maxCorner, point);
+    this.minCorner = vec3Min(this.minCorner, point);
+    this.maxCorner = vec3Max(this.maxCorner, point);
   }
 
   growToPrimitive(prim: BVHPrimitive) {
@@ -30,12 +30,12 @@ export class AABB {
   }
 
   area(): number {
-    const diag = vec3.sub(this.maxCorner, this.minCorner);
+    const diag = vec3Sub(this.maxCorner, this.minCorner);
     return diag[0] * diag[1] + diag[1] * diag[2] + diag[2] * diag[0];
   }
 
   largestAxis(): number {
-    const diag = vec3.sub(this.maxCorner, this.minCorner);
+    const diag = vec3Sub(this.maxCorner, this.minCorner);
 
     let largest = 0;
     if (diag[1] > diag[largest]) largest = 1;
@@ -49,14 +49,14 @@ export class AABB {
   }
 
   static fromVertices(verts: Float32Array): AABB {
-    let min = vec3.create(MAX_VALUE, MAX_VALUE, MAX_VALUE);
-    let max = vec3.create(MIN_VALUE, MIN_VALUE, MIN_VALUE);
+    let min: Vec3 = [MAX_VALUE, MAX_VALUE, MAX_VALUE];
+    let max: Vec3 = [MIN_VALUE, MIN_VALUE, MIN_VALUE];
 
     for (let i = 0; i + 2 < verts.length; i += 3) {
-      const p = vec3.create(verts[i], verts[i + 1], verts[i + 2]);
+      const p: Vec3 = [verts[i], verts[i + 1], verts[i + 2]];
 
-      min = vec3.min(min, p);
-      max = vec3.max(max, p);
+      min = vec3Min(min, p);
+      max = vec3Max(max, p);
     }
 
     return new AABB(min, max);
@@ -80,7 +80,7 @@ class BVHPrimitive {
     this.v0 = v0;
     this.v1 = v1;
     this.v2 = v2;
-    this.centroid = vec3.divScalar(vec3.add(v0, vec3.add(v1, v2)), 3);
+    this.centroid = vec3MulScalar(vec3Add(v0, vec3Add(v1, v2)), 1.0 / 3.0);
   }
 }
 
@@ -133,9 +133,9 @@ export class BVHTree {
       const i1 = (mesh.indices[baseIdx + 1] + vertexOffset) * 3;
       const i2 = (mesh.indices[baseIdx + 2] + vertexOffset) * 3;
 
-      const v0 = vec3.create(mesh.positions[i0], mesh.positions[i0 + 1], mesh.positions[i0 + 2]);
-      const v1 = vec3.create(mesh.positions[i1], mesh.positions[i1 + 1], mesh.positions[i1 + 2]);
-      const v2 = vec3.create(mesh.positions[i2], mesh.positions[i2 + 1], mesh.positions[i2 + 2]);
+      const v0: Vec3 = [mesh.positions[i0], mesh.positions[i0 + 1], mesh.positions[i0 + 2]];
+      const v1: Vec3 = [mesh.positions[i1], mesh.positions[i1 + 1], mesh.positions[i1 + 2]];
+      const v2: Vec3 = [mesh.positions[i2], mesh.positions[i2 + 1], mesh.positions[i2 + 2]];
 
       this.primitives[i] = new BVHPrimitive(baseIdx, v0, v1, v2);
     }
@@ -159,7 +159,9 @@ export class BVHTree {
       if (cost >= noSplitCost) return;
     } else if (this.heuristic === "MIDPOINT") {
       splitAxis = node.bounds!.largestAxis();
-      split = vec3.midpoint(node.bounds!.minCorner, node.bounds!.maxCorner)[splitAxis];
+
+      const midpoint = vec3MulScalar(vec3Add(node.bounds!.minCorner, node.bounds!.maxCorner), 0.5);
+      split = midpoint[splitAxis];
     }
 
     let i = node.firstPrimitiveOffset!;

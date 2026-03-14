@@ -1,11 +1,15 @@
-import { type Vec3, vec3, type Mat4, mat4 } from "wgpu-matrix";
+import {
+  type Vec3, type Mat4, mat4Identity, mat4Invert, mat4Transpose,
+  mat4Perspective, lookAt, vec3Normalize, vec3Cross, vec3Add,
+  vec3AddScaled,
+} from "./math";
 
 export class Camera {
   // world vectors
   position: Vec3;
-  front: Vec3 = vec3.create(0, 0, -1);
-  right: Vec3 = vec3.create(1, 0, 0);
-  worldUp: Vec3 = vec3.create(0, 1, 0);
+  front: Vec3 = [0, 0, -1];
+  right: Vec3 = [1, 0, 0];
+  worldUp: Vec3 = [0, 1, 0];
 
   // matrices
   modelMat: Mat4;
@@ -35,11 +39,11 @@ export class Camera {
     this.position = position;
     this.aspect = aspectRatio;
 
-    this.modelMat = mat4.identity();
-    this.viewMat  = mat4.identity(); 
-    this.invViewMat = mat4.identity();
-    this.transInvModelMat = mat4.identity();
-    this.projMat = mat4.perspective(
+    this.modelMat = mat4Identity();
+    this.viewMat  = mat4Identity(); 
+    this.invViewMat = mat4Identity();
+    this.transInvModelMat = mat4Identity();
+    this.projMat = mat4Perspective(
       this.fov,
       this.aspect,
       this.near,
@@ -53,20 +57,20 @@ export class Camera {
     this.front[0] = -Math.cos(this.pitch) * Math.sin(this.yaw);
     this.front[1] = -Math.sin(this.pitch);
     this.front[2] = -Math.cos(this.pitch) * Math.cos(this.yaw);
-    vec3.normalize(this.front, this.front);
+    this.front = vec3Normalize(this.front);
 
-    vec3.cross(this.front, this.worldUp, this.right);
-    vec3.normalize(this.right, this.right);
+    this.right = vec3Cross(this.front, this.worldUp);
+    this.right = vec3Normalize(this.right);
   }
 
   updateCamera() {
     this.updateVectors();
     
-    const target = vec3.add(this.position, this.front);
-    mat4.lookAt(this.position, target, this.worldUp, this.viewMat);
+    const target = vec3Add(this.position, this.front);
+    lookAt(this.viewMat, this.position, target, this.worldUp);
     
-    this.invViewMat = mat4.invert(this.viewMat);
-    this.transInvModelMat = mat4.transpose(mat4.invert(this.modelMat));
+    this.invViewMat = mat4Invert(this.viewMat) ?? mat4Identity();
+    this.transInvModelMat = mat4Transpose(mat4Invert(this.modelMat) ?? mat4Identity());
   }
 
   processMouseMovement(dx: number, dy: number) {
@@ -78,8 +82,11 @@ export class Camera {
   }
 
   processKeyboard(forward: number, right: number, up: number) {
-    if (forward !== 0) vec3.addScaled(this.position, this.front, forward * this.moveSpeed, this.position);
-    if (right !== 0) vec3.addScaled(this.position, this.right, right * this.moveSpeed, this.position);
-    if (up !== 0) vec3.addScaled(this.position, this.worldUp, up * this.moveSpeed, this.position);
+    if (forward !== 0)
+      this.position = vec3AddScaled(this.position, this.front, forward * this.moveSpeed);
+    if (right !== 0)
+      this.position = vec3AddScaled(this.position, this.right, right * this.moveSpeed);
+    if (up !== 0)
+      this.position = vec3AddScaled(this.position, this.worldUp, up * this.moveSpeed);
   }
 }
