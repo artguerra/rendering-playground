@@ -151,6 +151,7 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
+      margin-top: 10px;
       margin-bottom: 10px;
     }
 
@@ -307,6 +308,7 @@
     }
 
     .group-content {
+      margin-top: 10px;
       padding: 0 10px 10px;
       display: grid;
       gap: 8px;
@@ -379,6 +381,29 @@
         left: 10px;
       }
     }
+
+    select {
+      width: 100%;
+      margin: 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border-strong);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      outline: none;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+    }
+
+    select option {
+      background: #10141c;
+      color: var(--text);
+    }
+
+    select:focus {
+      border-color: rgba(122, 162, 255, 0.5);
+    }
     </style>
   </head>
 
@@ -411,6 +436,16 @@
             </div>
 
             <div class="section">
+              <div class="row">
+                <div class="row-top">
+                  <label class="label" for="sceneSelect">Scene</label>
+                </div>
+                <select id="sceneSelect">
+                  <option value="lightShowcase">Light Sampling Showcase</option>
+                  <option value="cornell">Cornell Box</option>
+                </select>
+              </div>
+
               <div class="row inline">
                 <input type="checkbox" id="raytracingCheckbox" />
                 <label class="label" for="raytracingCheckbox">Path tracing</label>

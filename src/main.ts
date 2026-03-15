@@ -1,6 +1,6 @@
 import {
-  type GPUAppPipeline, initWebGPU, initRenderPipeline,
-  buildSceneBindGroups, render
+  type GPUApp, type GPUAppPipeline, initWebGPU,
+  initRenderPipeline, buildSceneBindGroups, render,
 } from "./renderer";
 
 import type { Material, LightSource } from "./types";
@@ -8,6 +8,11 @@ import { type Vec3 } from "./math";
 import { Camera } from "./camera";
 import { Scene } from "./scene";
 import { type MeshInstance, createBox, createQuad, createSphere, createCylinder } from "./mesh";
+
+const state = {
+  scene: null as unknown as Scene,
+  app: null as unknown as GPUApp
+};
 
 const ui = {
   canvas: document.querySelector("canvas") as HTMLCanvasElement,
@@ -18,6 +23,7 @@ const ui = {
   toneMappingCheck: document.querySelector("#toneMappingCheckbox") as HTMLInputElement,
   restirCheck: document.querySelector("#restirCheckbox") as HTMLInputElement,
   accumulationCheck: document.querySelector("#accumulationCheckbox") as HTMLInputElement,
+  sceneSelect: document.getElementById("sceneSelect") as HTMLSelectElement,
   viewBvhCheck: document.querySelector("#viewBvh") as HTMLInputElement,
   maxDepthSlider: document.querySelector("#rayDepth") as HTMLInputElement,
   stratifiedGridSlider: document.querySelector("#stratifiedGridN") as HTMLInputElement,
@@ -41,27 +47,29 @@ function hexToSRGB(hex: string): Vec3 {
   ];
 }
 
-function initEvents(app: GPUAppPipeline, scene: Scene) {
+function initEvents() {
+  if (!state.app || !state.scene) return;
+
   ui.canvas.addEventListener("mousedown", e => {
-    scene.camera.lastX = e.clientX;
-    scene.camera.lastY = e.clientY;
-    if (e.button === 0) scene.camera.dragging = true;
+    state.scene.camera.lastX = e.clientX;
+    state.scene.camera.lastY = e.clientY;
+    if (e.button === 0) state.scene.camera.dragging = true;
   });
 
   window.addEventListener("mouseup", () => {
-    scene.camera.dragging = false;
+    state.scene.camera.dragging = false;
   });
 
   ui.canvas.addEventListener("mousemove", e => {
-    if (!scene.camera.dragging) return;
+    if (!state.scene.camera.dragging) return;
 
-    const dx = e.clientX - scene.camera.lastX;
-    const dy = e.clientY - scene.camera.lastY;
-    scene.camera.lastX = e.clientX;
-    scene.camera.lastY = e.clientY;
+    const dx = e.clientX - state.scene.camera.lastX;
+    const dy = e.clientY - state.scene.camera.lastY;
+    state.scene.camera.lastX = e.clientX;
+    state.scene.camera.lastY = e.clientY;
 
-    scene.camera.processMouseMovement(dx, dy);
-    scene.frameCount = 0.0;
+    state.scene.camera.processMouseMovement(dx, dy);
+    state.scene.frameCount = 0.0;
   });
 
  window.addEventListener("keydown", (e) => {
@@ -79,65 +87,67 @@ function initEvents(app: GPUAppPipeline, scene: Scene) {
   ui.canvas.addEventListener("contextmenu", e => e.preventDefault());
 
   ui.albedoPicker.addEventListener("input", () => {
-    scene.frameCount = 0.0;
-    scene.materials[3].albedo = hexToSRGB(ui.albedoPicker.value);
-    scene.updateMaterials(app);
+    state.scene.frameCount = 0.0;
+    state.scene.materials[3].albedo = hexToSRGB(ui.albedoPicker.value);
+    state.scene.updateMaterials(state.app);
   });
 
   ui.roughnessSlider.addEventListener("input", () => {
     const val = parseFloat(ui.roughnessSlider.value);
 
-    scene.frameCount = 0.0;
-    scene.materials[3].roughness = val;
-    scene.updateMaterials(app);
+    state.scene.frameCount = 0.0;
+    state.scene.materials[3].roughness = val;
+    state.scene.updateMaterials(state.app);
   });
 
   ui.metalnessSlider.addEventListener("input", () => {
     const val = parseFloat(ui.metalnessSlider.value);
 
-    scene.frameCount = 0.0;
-    scene.materials[3].metalness = val;
-    scene.updateMaterials(app);
+    state.scene.frameCount = 0.0;
+    state.scene.materials[3].metalness = val;
+    state.scene.updateMaterials(state.app);
   });
 
-  ui.raytracingCheck.addEventListener("input", () => { scene.frameCount = 0.0; });
+  ui.raytracingCheck.addEventListener("input", () => { state.scene.frameCount = 0.0; });
 
   ui.toneMappingCheck.addEventListener("input", () => {
-    scene.toneMappingEnabled = ui.toneMappingCheck.checked;
+    state.scene.toneMappingEnabled = ui.toneMappingCheck.checked;
   });
 
   ui.restirCheck.addEventListener("input", () => {
-    scene.restirEnabled = ui.restirCheck.checked;
-    scene.frameCount = 0.0;
+    state.scene.restirEnabled = ui.restirCheck.checked;
+    state.scene.frameCount = 0.0;
   });
 
   ui.accumulationCheck.addEventListener("input", () => {
-    scene.accumulationEnabled = ui.accumulationCheck.checked;
-    scene.frameCount = 0.0;
+    state.scene.accumulationEnabled = ui.accumulationCheck.checked;
+    state.scene.frameCount = 0.0;
   });
 
   ui.viewBvhCheck.addEventListener("input", () => {
-    scene.viewBvh = ui.viewBvhCheck.checked;
+    state.scene.viewBvh = ui.viewBvhCheck.checked;
   });
 
   ui.maxDepthSlider.addEventListener("input", () => {
     const val = parseInt(ui.maxDepthSlider.value);
 
-    scene.frameCount = 0.0;
-    scene.maxRayDepth = val;
+    state.scene.frameCount = 0.0;
+    state.scene.maxRayDepth = val;
     ui.depthText.innerText = `${val}`;
   });
 
   ui.stratifiedGridSlider.addEventListener("input", () => {
     const val = parseInt(ui.stratifiedGridSlider.value);
 
-    scene.frameCount = 0.0;
-    scene.stratifiedGridSize = val;
+    state.scene.frameCount = 0.0;
+    state.scene.stratifiedGridSize = val;
     ui.sppText.innerText = `${val * val}`;
   });
 }
 
-function handleCameraMovement(scene: Scene) {
+function handleCameraMovement() {
+  if (!state.scene) return;
+
   let moveForward = 0;
   let moveRight = 0;
   let moveUp = 0;
@@ -150,20 +160,33 @@ function handleCameraMovement(scene: Scene) {
   if (keys.q) moveUp -= 1;
 
   if (moveForward !== 0 || moveRight !== 0 || moveUp !== 0) {
-    scene.camera.processKeyboard(moveForward, moveRight, moveUp);
-    scene.frameCount = 0.0;
+    state.scene.camera.processKeyboard(moveForward, moveRight, moveUp);
+    state.scene.frameCount = 0.0;
   }
 }
 
 let lastTime = performance.now();
+let accumulatedTime = 0;
+let framesThisInterval = 0;
 
 function updateStats() {
   const now = performance.now();
   const dt = now - lastTime;
   lastTime = now;
 
-  ui.fpsText.textContent = (1000 / dt).toFixed(1);
-  ui.frameTimeText.textContent = `${dt.toFixed(2)} ms`;
+  accumulatedTime += dt;
+  framesThisInterval++;
+
+  if (accumulatedTime >= 500) {
+    const avgFrameTime = accumulatedTime / framesThisInterval;
+    const fps = 1000 / avgFrameTime;
+
+    ui.fpsText.textContent = fps.toFixed(1);
+    ui.frameTimeText.textContent = `${avgFrameTime.toFixed(2)} ms`;
+
+    accumulatedTime = 0;
+    framesThisInterval = 0;
+  }
 }
 
 type SceneData = [Camera, Material[], LightSource[], MeshInstance[]];
@@ -218,7 +241,7 @@ function createLightingShowcase(): SceneData {
       metalness: parseFloat(ui.metalnessSlider.value),
       materialType: 0,
       emissionStrength: 0.0
-    }, // UI-controlled material
+    },
     { albedo: [0.90, 0.92, 0.95], roughness: 0.05, metalness: 0.0, materialType: 0, emissionStrength: 0.0 }, // glossy accents
     { albedo: [0.34, 0.35, 0.39], roughness: 0.07, metalness: 0.0, materialType: 0, emissionStrength: 0.0 }, // glossy floor
     { albedo: [0.05, 0.05, 0.06], roughness: 0.22, metalness: 0.0, materialType: 0, emissionStrength: 0.0 }, // black trim
@@ -408,14 +431,11 @@ function createLightingShowcase(): SceneData {
       coreW,
       0.0,
       color,
-      100
+      50
     );
   };
 
-  // ---------------------------------------------------------------------------
-  // corridor shell
-  // ---------------------------------------------------------------------------
-
+  // corridor walls
   addQuad([-halfW, 0.0, 0.0], [0.0, 0.0, corridorLength], [corridorWidth, 0.0, 0.0], 5); // floor
   addQuad([-halfW, corridorHeight, 0.0], [corridorWidth, 0.0, 0.0], [0.0, 0.0, corridorLength], 0); // ceiling
   addQuad([-halfW, 0.0, 0.0], [0.0, corridorHeight, 0.0], [0.0, 0.0, corridorLength], 0); // left wall
@@ -428,7 +448,7 @@ function createLightingShowcase(): SceneData {
   addBox([-0.62, 0.0, 0.35], 0.05, 0.03, corridorLength - 0.70, 0.0, 6);
   addBox([0.57, 0.0, 0.35], 0.05, 0.03, corridorLength - 0.70, 0.0, 6);
 
-  // subtle ceiling and side trims
+  // ceiling and side trims
   addBox([-0.16, corridorHeight - 0.18, 0.35], 0.32, 0.12, corridorLength - 0.70, 0.0, 1);
   addBox([-halfW + 0.05, 0.48, 0.35], 0.06, 0.08, corridorLength - 0.70, 0.0, 6);
   addBox([halfW - 0.11, 0.48, 0.35], 0.06, 0.08, corridorLength - 0.70, 0.0, 6);
@@ -444,10 +464,7 @@ function createLightingShowcase(): SceneData {
   addBox([0.84, 0.0, corridorLength - 0.20], 0.20, 2.26, 0.16, 0.0, 6);
   addBox([-1.04, 2.06, corridorLength - 0.20], 2.08, 0.20, 0.16, 0.0, 6);
 
-  // ---------------------------------------------------------------------------
-  // evenly spaced ceiling emissive panels
-  // ---------------------------------------------------------------------------
-
+  // ceiling emissive panels
   const ceilingLightCount = 8;
   const ceilingLightStart = 1.10;
   const ceilingLightStep = (corridorLength - 2.20) / (ceilingLightCount - 1);
@@ -466,7 +483,7 @@ function createLightingShowcase(): SceneData {
       0.015,
       corridorHeight - 0.04,
       ceilingLightColor,
-      0
+      0.1
     );
 
     addEmissiveCeilingPanel(
@@ -477,14 +494,11 @@ function createLightingShowcase(): SceneData {
       0.015,
       corridorHeight - 0.04,
       ceilingLightColor,
-      0
+      0.1
     );
   }
 
-  // ---------------------------------------------------------------------------
   // light totems, evenly spaced through the corridor
-  // ---------------------------------------------------------------------------
-
   const pillarCount = 7;
   const pillarStart = 2.00;
   const pillarStep = 2.10;
@@ -498,10 +512,7 @@ function createLightingShowcase(): SceneData {
     addLightTotem(x, z, color);
   }
 
-  // ---------------------------------------------------------------------------
-  // simple glossy showcase objects on the center line
-  // ---------------------------------------------------------------------------
-
+  // glossy showcase objects on the center line
   const showcaseZ = [4.1, 9.0, 13.9];
   const showcaseMaterials = [3, 0, 3];
 
@@ -509,40 +520,62 @@ function createLightingShowcase(): SceneData {
     const z = showcaseZ[i];
 
     addCylinder([0.0, 0.0, z], 0.18, 0.12, 20, 1);
-    addSphere([0.0, 0.40, z], 0.22, 12, 16, showcaseMaterials[i]);
+    addSphere([0.0, 0.40, z], 0.22, 16, 16, showcaseMaterials[i]);
   }
 
   // end object
   addCylinder([0.0, 0.0, corridorLength - 1.05], 0.20, 0.14, 24, 1);
-  addSphere([0.0, 0.46, corridorLength - 1.05], 0.25, 14, 18, 3);
+  addSphere([0.0, 0.46, corridorLength - 1.05], 0.25, 16, 16, 3);
 
   return [camera, materials, lights, instances];
+}
+
+function loadScene(pipelineApp: GPUAppPipeline, sceneId: string) {
+  const [ camera, materials, lights, instances ] = sceneId === "cornell" 
+    ? createCornellBox() 
+    : createLightingShowcase();
+
+  state.scene = new Scene(camera, instances, materials, lights);
+
+  state.scene.accumulationEnabled = ui.accumulationCheck.checked;
+  state.scene.restirEnabled = ui.restirCheck.checked;
+  state.scene.toneMappingEnabled = ui.toneMappingCheck.checked;
+  state.scene.viewBvh = ui.viewBvhCheck.checked;
+  state.scene.maxRayDepth = parseInt(ui.maxDepthSlider.value);
+  state.scene.stratifiedGridSize = parseInt(ui.stratifiedGridSlider.value);
+  
+  if (state.scene.materials.length > 3) {
+    state.scene.materials[3].albedo = hexToSRGB(ui.albedoPicker.value);
+    state.scene.materials[3].roughness = parseFloat(ui.roughnessSlider.value);
+    state.scene.materials[3].metalness = parseFloat(ui.metalnessSlider.value);
+  }
+
+  state.scene.createBuffers(pipelineApp);
+  state.app = buildSceneBindGroups(pipelineApp, state.scene);
 }
 
 async function main() {
   const baseApp = await initWebGPU(ui.canvas);
   const pipelineApp = initRenderPipeline(baseApp);
 
-  const [ camera, materials, lights, instances ] = createLightingShowcase();
+  loadScene(pipelineApp, ui.sceneSelect.value);
+  initEvents();
 
-  const scene = new Scene(camera, instances, materials, lights);
-  scene.createBuffers(pipelineApp);
-  initEvents(pipelineApp, scene);
-
-  const app = buildSceneBindGroups(pipelineApp, scene);
+  ui.sceneSelect.addEventListener("change", () => {
+    loadScene(pipelineApp, ui.sceneSelect.value);
+  });
 
   function frame() {
     updateStats();
 
-    handleCameraMovement(scene);
-    scene.animate();
-    scene.camera.updateCamera();
-    scene.updateGPU(app);
+    handleCameraMovement();
+    state.scene.animate();
+    state.scene.camera.updateCamera();
+    state.scene.updateGPU(state.app);
 
     const raytracingEnabled = ui.raytracingCheck.checked;
-    render(app, scene, raytracingEnabled);
+    render(state.app, state.scene, raytracingEnabled);
     requestAnimationFrame(frame);
-
   }
   
   requestAnimationFrame(frame);
