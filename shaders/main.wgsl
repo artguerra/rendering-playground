@@ -142,6 +142,12 @@ fn attenuation(dist: f32) -> f32 {
   return 1.0 / sqr(dist);
 }
 
+// sgrb luminance to make color value a scalar
+fn luminance(c: vec3f) -> f32 {
+  return dot(c, vec3f(0.2126, 0.7152, 0.0722));
+}
+
+
 // -------------------------------------------- RNGs --------------------------------------------
 
 // based on "Efficient pseudo-random number generation for monte-carlo simulations using graphic processors" (Mohanty et al.)
@@ -669,21 +675,36 @@ fn sample_light_uniform(u: f32) -> u32 {
   return light_idx;
 }
 
-fn uniform_light_sample_pdf(d: f32, area: f32, cos_light: f32) -> f32 {
-  // solid angle pdf (dist^2) / (area * cos_light). 
-  let pdf = (d * d) / (area * cos_light * f32(scene.num_emissive_triangles));
+fn uniform_light_sample_pdf(area: f32) -> f32 {
+  // uniform pdf in area measure
+  let pdf = 1.0 / (area * f32(scene.num_emissive_triangles));
   return pdf;
 }
 
 // ----------------------------- ReSTIR -----------------------------
+
+struct LightCandidate {
+  emissive_idx: u32,
+  light_point: vec3f,
+  light_normal: vec3f,
+  area: f32,
+  p_source: f32, // source PDF (in area measure) -> p(x) on the paper
+}
+
+struct LightEval {
+  f_unshadowed: vec3f, // fr * Le * G (without visibility)
+  p_hat: f32, // scalar target used by RIS
+}
+
 struct Reservoir {
-  chosen_sample: u32,
+  sample: LightCandidate,
   w_sum: f32,
   m: u32, // samples seen so far
+  final_w: f32, // (1 / p_hat) * (w_sum / M) for the final sample
 }
 
 fn update_reservoir(
-  xi: u32, // new sample
+  xi: LightCandidate, // new sample
   wi: f32, // weight associated to xi
   res: ptr<function, Reservoir>, // the reservoir to update
   u: f32 // uniform random variable
@@ -691,103 +712,152 @@ fn update_reservoir(
   (*res).m++;
   (*res).w_sum += wi;
 
-  let choosing_prob = wi / (*res).w_sum;
-  if (u < choosing_prob) {
-    (*res).chosen_sample = xi;
+  if (wi > 0.0) {
+    let choosing_prob = wi / (*res).w_sum;
+    if (u < choosing_prob) {
+      (*res).sample = xi;
+    }
   }
 }
 
-fn sample_light_ris(pos: vec3f, wo: vec3f, normal: vec3f, mat: Material, rng: ptr<function, RngState>) -> u32 {
-  const M = 32u; // number of candidate samples from source distribution
-  var res = Reservoir(0u, 0.0, 0u);
+fn sample_light_candidate_uniform(rng: ptr<function, RngState>) -> LightCandidate {
+  let emissive_idx = sample_light_uniform(rand(rng));
+  let emissive_tri = emissive_triangles[emissive_idx];
 
-  for (var i = 0u; i < M; i++) {
-    let xi = sample_light_uniform(rand(rng));
-    let emissive_tri = emissive_triangles[xi];
+  var light_point: vec3f;
+  var light_normal: vec3f;
+  var area: f32;
+  sample_triangle(
+    emissive_tri.tri_idx,
+    emissive_tri.mesh_idx,
+    vec2f(rand(rng), rand(rng)),
+    &light_point,
+    &light_normal,
+    &area
+  );
 
-    // sample a random point on triangle
-    var light_point: vec3f;
-    var light_normal: vec3f;
-    var area: f32;
-    sample_triangle(emissive_tri.tri_idx, emissive_tri.mesh_idx, vec2f(rand(rng), rand(rng)), &light_point, &light_normal, &area);
+  let p_source = uniform_light_sample_pdf(area);
+  return LightCandidate(emissive_idx, light_point, light_normal, area, p_source);
+}
 
-    let pos_to_light = light_point - pos;
-    let di = length(pos_to_light);
-    let omega_i = pos_to_light / di;
-
-    let n_dot_l = dot(normal, omega_i);
-    let fr = brdf(omega_i, wo, normal, mat.albedo, mat.roughness, mat.metalness);
-
-    let light_mesh = meshes[emissive_tri.mesh_idx];
-    let light_mat = materials[light_mesh.material_idx];
-    let li = light_mat.albedo * light_mat.emission_strength;
-
-    // L = (BRDF * L_i * cos(theta)) / pdf_light
-    let radiance = fr * li * n_dot_l;
-
-    let wi = length((radiance) / 1.0);
-    update_reservoir(xi, wi, &res, rand(rng));
+fn evaluate_light_candidate(
+  position: vec3f,
+  normal: vec3f,
+  wo: vec3f,
+  mat: Material,
+  candidate: LightCandidate
+) -> LightEval {
+  let pos_to_light = candidate.light_point - position;
+  let d2 = dot(pos_to_light, pos_to_light);
+  if (d2 <= 1e-12) {
+    return LightEval(vec3f(0.0), 0.0);
   }
 
-  return res.chosen_sample;
+  let di = sqrt(d2);
+  let wi = pos_to_light / di;
+
+  let cos_surface = max(0.0, dot(normal, wi));
+  let cos_light = max(0.0, dot(candidate.light_normal, -wi));
+
+  if (cos_surface <= 0.0 || cos_light <= 0.0) {
+    return LightEval(vec3f(0.0), 0.0);
+  }
+
+  let emissive_tri = emissive_triangles[candidate.emissive_idx];
+  let light_mesh = meshes[emissive_tri.mesh_idx];
+  let light_mat = materials[light_mesh.material_idx];
+
+  let Le = light_mat.albedo * light_mat.emission_strength;
+  let fr = brdf(wi, wo, normal, mat.albedo, mat.roughness, mat.metalness);
+
+  let G = (cos_surface * cos_light) / d2;
+  let f_unshadowed = fr * Le * G;
+
+  // scalar target for RIS
+  let p_hat = max(0.0, luminance(f_unshadowed));
+
+  return LightEval(f_unshadowed, p_hat);
+}
+
+fn sample_light_ris(
+  position: vec3f,
+  wo: vec3f,
+  normal: vec3f,
+  mat: Material,
+  rng: ptr<function, RngState>
+) -> Reservoir {
+  const M = 32u; // number of candidate samples from source distribution
+  var res = Reservoir();
+  res.w_sum = 0.0;
+  res.final_w = 0.0;
+  res.m = 0u;
+
+  for (var i = 0u; i < M; i++) {
+    let candidate = sample_light_candidate_uniform(rng);
+    let eval = evaluate_light_candidate(position, normal, wo, mat, candidate);
+
+    let w = eval.p_hat / candidate.p_source;
+    update_reservoir(candidate, w, &res, rand(rng));
+  }
+
+  let selected_eval = evaluate_light_candidate(position, normal, wo, mat, res.sample);
+  if (selected_eval.p_hat <= 0.0) {
+    res.final_w = 0.0;
+    return res;
+  }
+  res.final_w = res.w_sum / (f32(res.m) * selected_eval.p_hat);
+
+  return res;
+}
+
+fn trace_light_visibility(
+  position: vec3f,
+  normal: vec3f,
+  candidate: LightCandidate
+) -> bool {
+  let pos_to_light = candidate.light_point - position;
+  let di = length(pos_to_light);
+  let wi = pos_to_light / di;
+
+  var shadow_ray: Ray;
+  const SHADOW_BIAS = 0.0001;
+  shadow_ray.origin = position + SHADOW_BIAS * normal;
+  shadow_ray.direction = wi;
+
+  let emissive_tri = emissive_triangles[candidate.emissive_idx];
+
+  var shadow_hit: Hit;
+  let occluded = ray_trace(shadow_ray, di, true, emissive_tri.tri_idx, &shadow_hit);
+
+  return !occluded;
 }
 
 fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, rng: ptr<function, RngState>) -> vec4f {
   let mesh = meshes[hit.mesh_idx];
   let mat = materials[mesh.material_idx];
-  
+
   var position: vec3f;
   var world_normal: vec3f;
   get_hit_vectors(hit, &position, &world_normal);
 
   var color_response = vec3f(0.0);
   let wo = normalize(-incoming_ray_dir);
-  
+
   if (scene.num_emissive_triangles == 0u) { return vec4f(0.0, 0.0, 0.0, 1.0); }
 
-  var light_idx: u32;
   if (scene.restir_enabled == 0u) {
-    // uniform light sampling
-    light_idx = sample_light_uniform(rand(rng));
+    let candidate = sample_light_candidate_uniform(rng);
+    let eval = evaluate_light_candidate(position, world_normal, wo, mat, candidate);
+
+    if (trace_light_visibility(position, world_normal, candidate)) {
+      color_response += eval.f_unshadowed / candidate.p_source;
+    }
   } else {
-    light_idx = sample_light_ris(position, wo, world_normal, mat, rng);
-  }
-  let emissive_tri = emissive_triangles[light_idx];
+    let res = sample_light_ris(position, wo, world_normal, mat, rng);
 
-  // sample a random point on triangle
-  var light_point: vec3f;
-  var light_normal: vec3f;
-  var area: f32;
-  sample_triangle(emissive_tri.tri_idx, emissive_tri.mesh_idx, vec2f(rand(rng), rand(rng)), &light_point, &light_normal, &area);
-
-  let pos_to_light = light_point - position;
-  let di = length(pos_to_light);
-  let wi = pos_to_light / di;
-
-  let cos_light = dot(light_normal, -wi);
-  let n_dot_l = dot(world_normal, wi);
-
-  if (cos_light > 0.0 && n_dot_l > 0.0) {
-    let pdf_light = uniform_light_sample_pdf(di, area, cos_light);
-
-    var shadow_ray: Ray;
-    const SHADOW_BIAS = 0.0001;
-    shadow_ray.direction = wi;
-    shadow_ray.origin = position + SHADOW_BIAS * world_normal;
-
-    var shadow_hit: Hit;
-    let in_shadow = ray_trace(shadow_ray, di, true, emissive_tri.tri_idx, &shadow_hit);
-
-    if (!in_shadow) {
-      let fr = brdf(wi, wo, world_normal, mat.albedo, mat.roughness, mat.metalness);
-
-      let light_mesh = meshes[emissive_tri.mesh_idx];
-      let light_mat = materials[light_mesh.material_idx];
-      let li = light_mat.albedo * light_mat.emission_strength;
-
-      // L = (BRDF * L_i * cos(theta)) / pdf_light
-      let radiance = fr * li * n_dot_l;
-      color_response += radiance / pdf_light;
+    if (res.final_w > 0.0 && trace_light_visibility(position, world_normal, res.sample)) {
+      let eval = evaluate_light_candidate(position, world_normal, wo, mat, res.sample);
+      color_response += eval.f_unshadowed * res.final_w;
     }
   }
 
@@ -951,10 +1021,5 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
     textureStore(accumulation_next, tex_coord, vec4f(accumulated, 1.0));
   }
 
-  var finalColor = accumulated;
-  if (scene.tone_mapping != 0u) {
-    finalColor = tone_map_aces(accumulated);
-  }
-
-  return vec4f(finalColor, 1.0);
+  return vec4f(select(accumulated, tone_map_aces(accumulated), scene.tone_mapping != 0), 1.0);
 }
