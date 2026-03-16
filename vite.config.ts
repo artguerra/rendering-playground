@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import path from "path";
 
 export default defineConfig({
-  base: "rendering-playground",
+  base: "path-tracer",
   resolve: {
     alias: {
       "@shaders": path.resolve(__dirname, "./shaders/"),
