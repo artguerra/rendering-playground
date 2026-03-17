@@ -76,6 +76,9 @@ struct Scene {
   max_ray_depth: u32,
   stratified_grid_n: u32,
   restir_enabled: u32,
+
+  _pad: vec3<f32>,
+  use_streaming_ris_on_bounces: u32,
 }
 
 // ----------------------------------------------------------------------------
@@ -83,8 +86,8 @@ struct Scene {
 // ----------------------------------------------------------------------------
 
 struct Ray {
-  origin: vec3f,
-  direction: vec3f,
+  origin: vec3<f32>,
+  direction: vec3<f32>,
 }
 
 struct Hit {
@@ -102,14 +105,14 @@ struct Hit {
 struct LightCandidate {
   emissive_idx: u32,
   sample_uv: vec2<f32>, // barycentrics u,v ; w = 1-u-v
-  light_point: vec3f,
+  light_point: vec3<f32>,
   area: f32,
-  light_normal: vec3f,
+  light_normal: vec3<f32>,
   p_source: f32, // source PDF (in area measure) -> p(x) on the paper
 }
 
 struct LightEval {
-  f_unshadowed: vec3f, // fr * Le * G (without visibility)
+  f_unshadowed: vec3<f32>, // fr * Le * G (without visibility)
   p_hat: f32, // scalar target used by RIS
 }
 
@@ -773,19 +776,19 @@ fn shade_rt_local(hit: Hit, incoming_ray_dir: vec3f, rng: ptr<function, RngState
 
   if (scene.num_emissive_triangles == 0u) { return vec4f(0.0, 0.0, 0.0, 1.0); }
 
-  if (scene.restir_enabled == 0u) {
-    let candidate = sample_light_candidate_uniform(rng);
-    let eval = evaluate_light_candidate(position, world_normal, wo, mat, candidate);
-
-    if (trace_light_visibility(position, world_normal, candidate)) {
-      color_response += eval.f_unshadowed / candidate.p_source;
-    }
-  } else {
+  if (scene.restir_enabled != 0u && scene.use_streaming_ris_on_bounces != 0) {
     let res = sample_light_ris(position, wo, world_normal, mat, rng);
 
     if (res.final_w > 0.0 && trace_light_visibility(position, world_normal, res.sample)) {
       let eval = evaluate_light_candidate(position, world_normal, wo, mat, res.sample);
       color_response += eval.f_unshadowed * res.final_w;
+    }
+  } else {
+    let candidate = sample_light_candidate_uniform(rng);
+    let eval = evaluate_light_candidate(position, world_normal, wo, mat, candidate);
+
+    if (trace_light_visibility(position, world_normal, candidate)) {
+      color_response += eval.f_unshadowed / candidate.p_source;
     }
   }
 
@@ -1010,7 +1013,11 @@ fn shade_pathtrace_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // direct lighting:
         // - primary hit: use stored RIS reservoir from compute pass
         // - later bounces: use local estimator
-        if (depth == 0u && scene.restir_enabled != 0u) {
+        if (
+          depth == 0u &&
+          scene.restir_enabled != 0u &&
+          stored_reservoir_valid(reservoirs_initial_curr[idx])
+        ) {
           sample_color += shade_primary_from_stored_reservoir(hit, ray.direction, idx) * throughput;
         } else {
           sample_color += shade_rt_local(hit, ray.direction, &rng).xyz * throughput;

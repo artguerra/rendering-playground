@@ -22,6 +22,7 @@ const ui = {
   metalnessSlider: document.querySelector("#metalness") as HTMLInputElement,
   toneMappingCheck: document.querySelector("#toneMappingCheckbox") as HTMLInputElement,
   restirCheck: document.querySelector("#restirCheckbox") as HTMLInputElement,
+  risOnBouncesCheck: document.querySelector("#risOnBouncesCheckbox") as HTMLInputElement,
   accumulationCheck: document.querySelector("#accumulationCheckbox") as HTMLInputElement,
   sceneSelect: document.getElementById("sceneSelect") as HTMLSelectElement,
   viewBvhCheck: document.querySelector("#viewBvh") as HTMLInputElement,
@@ -116,6 +117,11 @@ function initEvents() {
 
   ui.restirCheck.addEventListener("input", () => {
     state.scene.restirEnabled = ui.restirCheck.checked;
+    state.scene.frameCount = 0.0;
+  });
+
+  ui.risOnBouncesCheck.addEventListener("input", () => {
+    state.scene.useRISOnBounces = ui.risOnBouncesCheck.checked;
     state.scene.frameCount = 0.0;
   });
 
