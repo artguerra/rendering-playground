@@ -924,7 +924,7 @@ fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let candidate = candidate_from_reservoir(stored_res);
 
   if (!trace_light_visibility(surface.pos, surface.normal, candidate)) {
-    reservoirs_curr[idx].final_w = 0.0;
+    reservoirs_curr[idx] = invalid_reservoir();
   }
 }
 
@@ -949,20 +949,25 @@ fn reservoir_target_p_hat(surface: PrimarySurface, r: Reservoir) -> f32 {
 fn combine_reservoirs_biased(
   res1: Reservoir,
   res2: Reservoir,
+  clamp_res2_m: bool,
   rng: ptr<function, RngState>
 ) -> Reservoir {
   var combined = invalid_reservoir();
 
-  if (reservoir_has_state(res1)) {
+  if (reservoir_contributes(res1)) {
     let w = res1.p_hat * res1.final_w * f32(res1.m);
     update_reservoir(
       &combined, res1.sample, res1.sample_uv, w, res1.m, res1.p_hat, rand(rng)
     );
   }
 
-  if (reservoir_has_state(res2)) {
-    let current_m_for_clamp = max(1u, select(0u, res1.m, reservoir_has_state(res1)));
-    let combining_m = min(res2.m, 20u * current_m_for_clamp);
+  if (reservoir_contributes(res2)) {
+    var combining_m = res2.m;
+
+    if (clamp_res2_m) {
+      let current_m_for_clamp = max(1u, select(0u, res1.m, reservoir_contributes(res1)));
+      combining_m = min(res2.m, 20u * current_m_for_clamp);
+    }
 
     let w = res2.p_hat * res2.final_w * f32(combining_m);
     update_reservoir(
@@ -981,9 +986,10 @@ fn combine_reservoirs_biased(
 fn combine_reservoirs_unbiased(
   res1: Reservoir,
   res2: Reservoir,
+  clamp_res2_m: bool,
   rng: ptr<function, RngState>
 ) -> Reservoir {
-  var combined = combine_reservoirs_biased(res1, res2, rng);
+  var combined = combine_reservoirs_biased(res1, res2, clamp_res2_m, rng);
 
   // if using the same pixel as temporal neighbor, z == combined.m
   // otherwise have to check for p hat of the sample evaluated at the neighbor surface
@@ -1040,9 +1046,9 @@ fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   var rng = init_rng(idx + scene.timestamp * 719393u);
 
   if (scene.restir_biased == 0u) {
-    reservoirs_curr[idx] = combine_reservoirs_unbiased(cur_res, prev_res, &rng);
+    reservoirs_curr[idx] = combine_reservoirs_unbiased(cur_res, prev_res, true, &rng);
   } else {
-    reservoirs_curr[idx] = combine_reservoirs_biased(cur_res, prev_res, &rng);
+    reservoirs_curr[idx] = combine_reservoirs_biased(cur_res, prev_res, true, &rng);
   }
 }
 
@@ -1060,7 +1066,8 @@ fn spatial_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (gid.x >= width || gid.y >= height) {
     return;
   }
-
+  
+  let pixel = vec2u(gid.xy);
   let idx = pixel_index(gid.xy);
 
   let surface = primary_surfaces_curr[idx];
@@ -1069,7 +1076,65 @@ fn spatial_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  reservoirs_curr[idx] = reservoirs_prev[idx];
+  // current unbiased combine is not correct for spatial reuse yet
+  // just skip for now
+  if (scene.restir_biased == 0u) {
+    reservoirs_curr[idx] = reservoirs_prev[idx];
+    return;
+  }
+
+  let num_chosen = select(2u, 3u, scene.restir_biased != 0);
+  let radius = 12.0;
+
+  var rng = init_rng(idx + scene.timestamp * 719393u);
+  var combined = reservoirs_prev[idx];
+
+  let dist_thresh = 0.1 * surface.cam_dist;
+  let cos_normal_thresh = cos(0.4363); // cos of ~25 deg in rad
+  for (var i = 0u; i < num_chosen; i++) {
+    // uniform disk sampling
+    let r = radius * sqrt(rand(&rng));
+    let theta = 2.0 * PI * rand(&rng);
+    let offset_x = r * cos(theta);
+    let offset_y = r * sin(theta);
+
+    let neigh_coords = vec2i(
+      i32(f32(pixel.x) + offset_x),
+      i32(f32(pixel.y) + offset_y)
+    );
+
+    if (neigh_coords.x < 0 || neigh_coords.y < 0 ||
+      neigh_coords.x >= i32(width) || neigh_coords.y >= i32(height)) {
+      continue;
+    }
+
+    let neigh_pixel = vec2u(u32(neigh_coords.x), u32(neigh_coords.y));
+    if (neigh_pixel.x == pixel.x && neigh_pixel.y == pixel.y) {
+      continue;
+    }
+
+    let neigh_idx = pixel_index(neigh_pixel);
+    let neigh_surface = primary_surfaces_curr[neigh_idx];
+
+    if (!primary_surface_valid(neigh_surface)) {
+      continue;
+    }
+
+    let dist_diff = abs(surface.cam_dist - neigh_surface.cam_dist);
+    let dot_normal = dot(surface.normal, neigh_surface.normal);
+
+    if (dist_diff > dist_thresh || dot_normal < cos_normal_thresh) {
+      continue;
+    }
+
+    let p_hat_on_neigh = reservoir_target_p_hat(surface, reservoirs_prev[neigh_idx]);
+    var neigh_res = reservoirs_prev[neigh_idx];
+    neigh_res.p_hat = p_hat_on_neigh;
+
+    combined = combine_reservoirs_biased(combined, neigh_res, false, &rng);
+  }
+
+  reservoirs_curr[idx] = combined;
 }
 
 // -------------------------- path tracing pass --------------------------

@@ -391,12 +391,15 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     const workgroupCountX = Math.ceil(app.canvas.width / 8);
     const workgroupCountY = Math.ceil(app.canvas.height / 8);
 
+    const bg0 = (scene.frameCount % 2 === 0) ? app.restirBindGroupA : app.restirBindGroupB;
+    const bg1 = (scene.frameCount % 2 === 0) ? app.restirBindGroupB : app.restirBindGroupA;
+
     const computePass = encoder.beginComputePass({ label: "pathtracing compute pass" });
 
     computePass.setBindGroup(0, app.sceneBindGroup);
     computePass.setBindGroup(1, app.geometryBindGroup);
 
-    computePass.setBindGroup(2, (scene.frameCount % 2 === 0) ? app.restirBindGroupA : app.restirBindGroupB);
+    computePass.setBindGroup(2, bg0);
 
     computePass.setPipeline(app.visibilityPipeline);
     computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
@@ -407,14 +410,24 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     computePass.setPipeline(app.visibilityReusePipeline);
     computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
-    computePass.setPipeline(app.temporalReusePipeline);
-    computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+    if (scene.temporalReuseEnabled) {
+      computePass.setPipeline(app.temporalReusePipeline);
+      computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+    }
 
-    // swap buffers to have the reservoirs computed so far in the reservoirs_prev storage, write to reservoirs_curr
-    computePass.setBindGroup(2, (scene.frameCount % 2 === 0) ? app.restirBindGroupB : app.restirBindGroupA);
+    if (scene.spatialReuseEnabled) {
+      // swap buffers to have the reservoirs computed so far in the reservoirs_prev storage, write to reservoirs_curr
+      computePass.setBindGroup(2, bg1);
+      computePass.setPipeline(app.spatialReusePipeline);
+      computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
-    computePass.setPipeline(app.spatialReusePipeline);
-    computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+      // second pass if biased
+      if (scene.restirBiased) {
+        computePass.setBindGroup(2, bg0);
+        computePass.setPipeline(app.spatialReusePipeline);
+        computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+      }
+    }
 
     computePass.setPipeline(app.shadePathtracePipeline);
     computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);

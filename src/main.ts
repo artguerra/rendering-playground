@@ -23,6 +23,8 @@ const ui = {
   toneMappingCheck: document.querySelector("#toneMappingCheckbox") as HTMLInputElement,
   restirCheck: document.querySelector("#restirCheckbox") as HTMLInputElement,
   restirBiasedCheck: document.querySelector("#restirBiasedCheckbox") as HTMLInputElement,
+  temporalReuseCheck: document.querySelector("#temporalReuseCheckbox") as HTMLInputElement,
+  spatialReuseCheck: document.querySelector("#spatialReuseCheckbox") as HTMLInputElement,
   risOnBouncesCheck: document.querySelector("#risOnBouncesCheckbox") as HTMLInputElement,
   accumulationCheck: document.querySelector("#accumulationCheckbox") as HTMLInputElement,
   sceneSelect: document.getElementById("sceneSelect") as HTMLSelectElement,
@@ -130,6 +132,16 @@ function initEvents() {
 
   ui.restirBiasedCheck.addEventListener("input", () => {
     state.scene.restirBiased = ui.restirBiasedCheck.checked;
+    state.scene.frameCount = 0.0;
+  });
+
+  ui.temporalReuseCheck.addEventListener("input", () => {
+    state.scene.temporalReuseEnabled = ui.temporalReuseCheck.checked;
+    state.scene.frameCount = 0.0;
+  });
+
+  ui.spatialReuseCheck.addEventListener("input", () => {
+    state.scene.spatialReuseEnabled = ui.spatialReuseCheck.checked;
     state.scene.frameCount = 0.0;
   });
 
@@ -248,17 +260,17 @@ function createLightingShowcase(): SceneData {
 
   const materials: Material[] = [
     { albedo: [0.94, 0.95, 0.98], roughness: 0.7, metalness: 0.0, emissionStrength: 0.0 }, // white shell
-    { albedo: [0.17, 0.18, 0.21], roughness: 0.36, metalness: 0.0, emissionStrength: 0.0 }, // dark structural parts
-    { albedo: [0.62, 0.64, 0.70], roughness: 0.20, metalness: 0.0, emissionStrength: 0.0 }, // neutral trim
+    { albedo: [0.17, 0.18, 0.21], roughness: 0.5, metalness: 0.0, emissionStrength: 0.0 }, // dark structural parts
+    { albedo: [0.34, 0.35, 0.39], roughness: 0.35, metalness: 0.0, emissionStrength: 0.0 }, // neutral trim
     {
       albedo: hexToSRGB(ui.albedoPicker.value),
       roughness: parseFloat(ui.roughnessSlider.value),
       metalness: parseFloat(ui.metalnessSlider.value),
       emissionStrength: 0.0
     },
-    { albedo: [0.90, 0.92, 0.95], roughness: 0.05, metalness: 0.0, emissionStrength: 0.0 }, // glossy accents
-    { albedo: [0.34, 0.35, 0.39], roughness: 0.07, metalness: 0.0, emissionStrength: 0.0 }, // glossy floor
-    { albedo: [0.05, 0.05, 0.06], roughness: 0.22, metalness: 0.0, emissionStrength: 0.0 }, // black trim
+    { albedo: [0.34, 0.35, 0.39], roughness: 0.15, metalness: 0.0, emissionStrength: 0.0 }, // glossy accents
+    { albedo: [0.99, 0.99, 0.99], roughness: 0.15, metalness: 0.0, emissionStrength: 0.0 }, // glossy floor
+    { albedo: [0.05, 0.05, 0.06], roughness: 0.37, metalness: 0.0, emissionStrength: 0.0 }, // black trim
   ];
 
   const instances: MeshInstance[] = [];
@@ -390,7 +402,7 @@ function createLightingShowcase(): SceneData {
     addCylinder([cx + postOffset, postY, z + postOffset], postRadius, postH, 20, 6);
 
     addEmissiveCylinderWithPreview(
-      [cx, coreY, z], 0.75 * coreW, coreH, 20, color, 20
+      [cx, coreY, z], 0.75 * coreW, coreH, 20, color, 15
     );
   };
 
@@ -437,11 +449,11 @@ function createLightingShowcase(): SceneData {
     const z = ceilingLightStart + i * ceilingLightStep;
 
     addEmissiveCeilingPanelWithPreview(
-      -0.92, z, ceilingLightW, ceilingLightL, corridorHeight - 0.01, ceilingLightColor, 20
+      -0.92, z, ceilingLightW, ceilingLightL, corridorHeight - 0.01, ceilingLightColor, 5
     );
 
     addEmissiveCeilingPanelWithPreview(
-      0.44, z, ceilingLightW, ceilingLightL, corridorHeight - 0.01, ceilingLightColor, 20
+      0.44, z, ceilingLightW, ceilingLightL, corridorHeight - 0.01, ceilingLightColor, 5
     );
   }
 

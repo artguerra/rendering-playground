@@ -21,11 +21,16 @@ export class Scene {
   viewBvh: boolean = false;
   
   mergedGeometry: MergedGeometry;
+  
+  // restir options
   toneMappingEnabled: boolean = false;
   restirEnabled: boolean = true;
-  useRISOnBounces: boolean = true;
+  useRISOnBounces: boolean = false;
   restirBiased: boolean = true;
+  temporalReuseEnabled: boolean = true;
+  spatialReuseEnabled: boolean = true;
   accumulationEnabled: boolean = true;
+
   stratifiedGridSize: number = 1;
   maxRayDepth: number = 3;
   frameCount: number = 0.0;
@@ -159,6 +164,8 @@ export class Scene {
     // emissive triangles (2 u32s = 8 bytes each)
     // considering lights dont move, if so have to update on updateGPU
     const numEmissive = Math.max(1, this.emissiveTriangles.length);
+    console.log(`number of emissive triangles: ${numEmissive}`);
+
     this.emissiveTriDataArray = new ArrayBuffer(numEmissive * 2 * 4);
     const eU32View = new Uint32Array(this.emissiveTriDataArray);
 
@@ -226,10 +233,10 @@ export class Scene {
     u32View[93] = this.stratifiedGridSize;
     u32View[94] = +this.restirEnabled;
     u32View[95] = +this.useRISOnBounces;
-    u32View[96] = +this.restirBiased;
+    u32View[96] = 0;
     u32View[97] = 0;
     u32View[98] = 0;
-    u32View[999] = 0;
+    u32View[99] = +this.restirBiased;
 
     app.device.queue.writeBuffer(this.uniformBuffer!, 0, sceneData);
   }

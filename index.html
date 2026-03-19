@@ -510,15 +510,31 @@
                 <label class="label" for="restirCheckbox">ReSTIR</label>
               </div>
 
-              <div class="row inline">
-                <input type="checkbox" id="restirBiasedCheckbox" checked />
-                <label class="label" for="restirBiasedCheckbox">Biased ReSTIR</label>
-              </div>
 
-              <div class="row inline">
-                <input type="checkbox" id="risOnBouncesCheckbox" checked />
-                <label class="label" for="risOnBouncesCheckbox">ReSTIR - Use streaming RIS on bounces</label>
-              </div>
+              <details class="group">
+                <summary>ReSTIR controls</summary>
+                <div class="group-content">
+                  <div class="row inline">
+                    <input type="checkbox" id="restirBiasedCheckbox" checked />
+                    <label class="label" for="restirBiasedCheckbox">Biased ReSTIR</label>
+                  </div>
+
+                  <div class="row inline">
+                    <input type="checkbox" id="temporalReuseCheckbox" checked />
+                    <label class="label" for="temporalReuseCheckbox">Temporal Reuse</label>
+                  </div>
+
+                  <div class="row inline">
+                    <input type="checkbox" id="spatialReuseCheckbox" checked />
+                    <label class="label" for="spatialReuseCheckbox">Spatial Reuse</label>
+                  </div>
+
+                  <div class="row inline">
+                    <input type="checkbox" id="risOnBouncesCheckbox" />
+                    <label class="label" for="risOnBouncesCheckbox">ReSTIR - Use streaming RIS on bounces</label>
+                  </div>
+                </div>
+              </details>
 
               <div class="row inline">
                 <input type="checkbox" id="toneMappingCheckbox" />
