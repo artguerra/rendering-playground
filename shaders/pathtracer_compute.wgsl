@@ -128,6 +128,7 @@ struct PrimarySurface {
   cam_dist: f32,
   normal: vec3<f32>,
   tri_idx: u32,
+  sampling_offsets: vec2<f32>,
   mesh_idx: u32,
   valid: u32,
 }
@@ -569,7 +570,7 @@ fn evaluate_light_candidate(
 // ---------------------- reservoir related helpers ----------------------
 
 fn invalid_primary_surface() -> PrimarySurface {
-  return PrimarySurface(vec3f(0.0), 0.0, vec3f(0.0), 0u, 0u, 0u);
+  return PrimarySurface(vec3f(0.0), 0.0, vec3f(0.0), 0u, vec2f(0.0), 0u, 0u);
 }
 
 fn invalid_reservoir() -> Reservoir {
@@ -807,7 +808,12 @@ fn visibility_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   // 1 SPP for ReSTIR state
-  let uv = vec2f((f32(pixel.x) + 0.5) / scene.canvas_width, 1.0 - (f32(pixel.y) + 0.5) / scene.canvas_height);
+  var rng = init_rng(idx + scene.timestamp * 719393u);
+  let off = vec2f(rand(&rng), rand(&rng));
+  let uv = vec2f(
+    (f32(pixel.x) + off.x) / scene.canvas_width,
+    1.0 - (f32(pixel.y) + off.y) / scene.canvas_height
+  );
 
   var ray = ray_at(uv, scene.camera);
   var hit: Hit;
@@ -830,7 +836,7 @@ fn visibility_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let cam_dist = length(cam_world_pos - position);
 
   primary_surfaces_curr[idx] = PrimarySurface(
-    position, cam_dist, normalize(world_normal), hit.tri_idx, hit.mesh_idx, 1u,
+    position, cam_dist, normalize(world_normal), hit.tri_idx, off, hit.mesh_idx, 1u,
   );
 }
 
@@ -1197,11 +1203,15 @@ fn shade_pathtrace_restir_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cell_start_x = f32(cell_x) * grid_step;
     let cell_start_y = f32(cell_y) * grid_step;
 
-    var off_x: f32 = 0.5;
-    var off_y: f32 = 0.5;
-    if (spp > 1) {
-      off_x = cell_start_x + rand(&rng) * grid_step;
-      off_y = cell_start_y + rand(&rng) * grid_step;
+    var off_x = cell_start_x + rand(&rng) * grid_step;
+    var off_y = cell_start_y + rand(&rng) * grid_step;
+
+    // sets the ray as the same direction as the ray sampled by restir
+    // if spp > 1, this part is skipped (but the result will be biased)
+    let primary_surface = primary_surfaces_curr[idx];
+    if (scene.restir_enabled != 0 && primary_surface_valid(primary_surface) && spp == 1) {
+      off_x = primary_surface.sampling_offsets.x;
+      off_y = primary_surface.sampling_offsets.y;
     }
 
     let coord = vec2f(
