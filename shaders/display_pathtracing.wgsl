@@ -1,6 +1,7 @@
 struct Camera {
   model_mat: mat4x4<f32>,
   view_mat: mat4x4<f32>,
+  prev_view_mat: mat4x4<f32>,
   inv_view_mat: mat4x4<f32>,
   trans_inv_model_mat: mat4x4<f32>,
   proj_mat: mat4x4<f32>,
@@ -19,6 +20,7 @@ struct Scene {
   // time
   timestamp: u32,
   frame_count: u32,
+  absolute_frame_count: u32,
 
   // options
   tone_mapping: u32,
@@ -27,6 +29,8 @@ struct Scene {
   stratified_grid_n: u32,
   restir_enabled: u32,
   use_streaming_ris_on_bounces: u32,
+  restir_biased: u32,
+  _pad: vec2<u32>,
 }
 
 @group(0) @binding(0)

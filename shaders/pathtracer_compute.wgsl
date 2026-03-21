@@ -23,6 +23,7 @@ struct EmissiveTriangle {
 struct Camera {
   model_mat: mat4x4<f32>,
   view_mat: mat4x4<f32>,
+  prev_view_mat: mat4x4<f32>,
   inv_view_mat: mat4x4<f32>,
   trans_inv_model_mat: mat4x4<f32>,
   proj_mat: mat4x4<f32>,
@@ -60,6 +61,7 @@ struct Scene {
   // time
   timestamp: u32,
   frame_count: u32,
+  absolute_frame_count: u32,
 
   // options
   tone_mapping: u32,
@@ -68,9 +70,8 @@ struct Scene {
   stratified_grid_n: u32,
   restir_enabled: u32,
   use_streaming_ris_on_bounces: u32,
-
-  _pad: vec3<u32>,
   restir_biased: u32,
+  _pad: vec2<u32>,
 }
 
 // ----------------------------------------------------------------------------
@@ -165,12 +166,15 @@ var<storage, read> emissive_triangles: array<EmissiveTriangle>;
 var<storage, read_write> primary_surfaces_curr: array<PrimarySurface>;
 
 @group(2) @binding(1)
-var<storage, read_write> reservoirs_curr: array<Reservoir>;
+var<storage, read_write> primary_surfaces_prev: array<PrimarySurface>;
 
 @group(2) @binding(2)
-var<storage, read_write> reservoirs_prev: array<Reservoir>;
+var<storage, read_write> reservoirs_curr: array<Reservoir>;
 
 @group(2) @binding(3)
+var<storage, read_write> reservoirs_prev: array<Reservoir>;
+
+@group(2) @binding(4)
 var pathtrace_output: texture_storage_2d<rgba32float, write>;
 
 // ----------------------------------------------------------------------------
@@ -916,6 +920,24 @@ fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // -------------------------- temporal reuse pass --------------------------
 
+fn should_reject_reuse_neighbor(surface: PrimarySurface, neigh_surface: PrimarySurface) -> bool {
+  if (!primary_surface_valid(neigh_surface)) {
+    return true;
+  }
+
+  let dist_thresh = 0.1 * surface.cam_dist;
+  let cos_normal_thresh = cos(0.4363); // cos of ~25 deg in rad
+
+  let dist_diff = abs(surface.cam_dist - neigh_surface.cam_dist);
+  let dot_normal = dot(surface.normal, neigh_surface.normal);
+
+  if (dist_diff > dist_thresh || dot_normal < cos_normal_thresh) {
+    return true;
+  }
+
+  return false;
+}
+
 // evaluate a reservoir p hat at a surface
 fn reservoir_target_p_hat(surface: PrimarySurface, r: Reservoir) -> f32 {
   if (!reservoir_valid(r)) {
@@ -969,6 +991,42 @@ fn combine_reservoirs_biased(
   return combined;
 }
 
+fn get_temporal_neighbor(
+  surface: PrimarySurface,
+  neigh_surface: ptr<function, PrimarySurface>,
+  neigh_reservoir: ptr<function, Reservoir>,
+) {
+  *neigh_surface = invalid_primary_surface();
+  *neigh_reservoir = invalid_reservoir();
+
+  let pos = vec4(surface.pos, 1.0);
+  let prev_clip= scene.camera.proj_mat * scene.camera.prev_view_mat * pos;
+
+  if (prev_clip.w <= 0) {
+    return;
+  }
+
+  let prev_ndc = prev_clip.xyz / prev_clip.w;
+
+  if (abs(prev_ndc.x) > 1.0 || abs(prev_ndc.y) > 1.0) {
+    return;
+  }
+
+  let prev_uv = vec2f(
+    0.5 + 0.5 * prev_ndc.x,
+    0.5 - 0.5 * prev_ndc.y,
+  );
+
+  let prev_pixel = vec2u(
+    u32(prev_uv.x * scene.canvas_width),
+    u32(prev_uv.y * scene.canvas_height)
+  );
+  let prev_idx = pixel_index(prev_pixel);
+
+  *neigh_surface = primary_surfaces_prev[prev_idx];
+  *neigh_reservoir = reservoirs_prev[prev_idx];
+}
+
 // combine reservoirs from temporal neighbors for each pixel.
 // some computation has to be done to fetch what is the temporal neighbor for a pixel,
 // since in this case we are not considering an animation, but a static accumulation, we
@@ -982,6 +1040,11 @@ fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
+  // first frame, nothing to reuse yet
+  if (scene.absolute_frame_count <= 1u) {
+    return;
+  }
+
   let idx = pixel_index(gid.xy);
 
   let surface = primary_surfaces_curr[idx];
@@ -990,32 +1053,48 @@ fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  let neigh_idx = idx; // considering the camera static
   let cur_res = reservoirs_curr[idx];
-  let prev_res = reservoirs_prev[neigh_idx];
 
-  // first frame, nothing to reuse yet
-  if (scene.frame_count <= 1u) {
+  var prev_surface: PrimarySurface;
+  var prev_res: Reservoir;
+  get_temporal_neighbor(surface, &prev_surface, &prev_res);
+
+  if (should_reject_reuse_neighbor(surface, prev_surface)) {
     return;
   }
 
   var rng = init_rng(idx + scene.timestamp * 719393u);
+
+  prev_res.p_hat = reservoir_target_p_hat(surface, prev_res);
   var combined = combine_reservoirs_biased(cur_res, prev_res, true, &rng);
 
   // unbiased weight calculation
-  // in this case, using the same pixel as temporal neighbor, z == combined.m
-  // otherwise have to check for p hat of the sample evaluated at the neighbor surface
   if (scene.restir_biased == 0u) {
+    if (!reservoir_valid(combined) || combined.p_hat <= 0.0) {
+      reservoirs_curr[idx] = invalid_reservoir();
+      return;
+    }
+
+    let final_candidate = candidate_from_reservoir(combined);
     var z = 0u;
+
+    // if its occluded, its true p_hat is 0
+    if (!trace_light_visibility(surface.pos, surface.normal, final_candidate)) {
+      reservoirs_curr[idx] = invalid_reservoir();
+      return;
+    }
 
     if (reservoir_valid(cur_res) && combined.p_hat > 0.0) {
       z += cur_res.m;
     }
 
-    if (reservoir_valid(prev_res) && combined.p_hat > 0.0) {
-      let current_m_for_clamp = max(1u, select(0u, cur_res.m, reservoir_valid(cur_res)));
-      let combining_m = min(prev_res.m, 20u * current_m_for_clamp);
-      z += combining_m;
+    if (reservoir_valid(prev_res)) { 
+      let visible = trace_light_visibility(prev_surface.pos, prev_surface.normal, final_candidate);
+      if (visible && reservoir_target_p_hat(prev_surface, combined) > 0.0) {
+        let current_m_for_clamp = max(1u, select(0u, cur_res.m, reservoir_valid(cur_res)));
+        let combining_m = min(prev_res.m, 20u * current_m_for_clamp);
+        z += combining_m;
+      }
     }
 
     if (z != 0u) {
@@ -1061,9 +1140,6 @@ fn spatial_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   var rng = init_rng(idx + scene.timestamp * 719393u);
   var combined = reservoirs_prev[idx];
 
-  let dist_thresh = 0.1 * surface.cam_dist;
-  let cos_normal_thresh = cos(0.4363); // cos of ~25 deg in rad
-
   for (var i = 0u; i < max_chosen; i++) {
     // uniform disk sampling
     let r = radius * sqrt(rand(&rng));
@@ -1089,14 +1165,7 @@ fn spatial_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let neigh_idx = pixel_index(neigh_pixel);
     let neigh_surface = primary_surfaces_curr[neigh_idx];
 
-    if (!primary_surface_valid(neigh_surface)) {
-      continue;
-    }
-
-    let dist_diff = abs(surface.cam_dist - neigh_surface.cam_dist);
-    let dot_normal = dot(surface.normal, neigh_surface.normal);
-
-    if (dist_diff > dist_thresh || dot_normal < cos_normal_thresh) {
+    if (should_reject_reuse_neighbor(surface, neigh_surface)) {
       continue;
     }
 
@@ -1119,8 +1188,14 @@ fn spatial_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let final_candidate = candidate_from_reservoir(combined);
-    var z = 0u;
 
+    // if its occluded, its true p_hat is 0
+    if (!trace_light_visibility(surface.pos, surface.normal, final_candidate)) {
+      reservoirs_curr[idx] = invalid_reservoir();
+      return;
+    }
+
+    var z = 0u;
     for (var i = 0u; i < chosen_count; i++) {
       let neigh_res = reservoirs_prev[pixels_chosen[i]];
       let neigh_surface = primary_surfaces_curr[pixels_chosen[i]];

@@ -34,6 +34,7 @@ export class Scene {
   stratifiedGridSize: number = 1;
   maxRayDepth: number = 3;
   frameCount: number = 0.0;
+  absoluteFrameCount: number = 0.0;
 
   // GPU buffers
   buffersInitialized: boolean = false;
@@ -142,7 +143,7 @@ export class Scene {
     this.bvhBuffer = createGPUBuffer(app.device, this.bvhDataArray!, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
 
     this.uniformBuffer = app.device.createBuffer({
-      size: 100 * 4, // 100 floats in scene struct in shader
+      size: 116 * 4, // 116 floats in scene struct in shader
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -181,6 +182,7 @@ export class Scene {
 
   animate() {
     this.frameCount += 1.0;
+    this.absoluteFrameCount += 1.0;
   }
 
   updateMaterials(app: GPUAppPipeline) {
@@ -205,38 +207,41 @@ export class Scene {
   updateGPU(app: GPUAppPipeline) {
     if (!this.buffersInitialized) return;
 
-    const sceneData = new ArrayBuffer(100 * 4);
+    const sceneData = new ArrayBuffer(116 * 4);
     const f32View = new Float32Array(sceneData);
     const u32View = new Uint32Array(sceneData);
 
     // matrices
     f32View.set(this.camera.modelMat, 0);
     f32View.set(this.camera.viewMat, 16);
-    f32View.set(this.camera.invViewMat, 32);
-    f32View.set(this.camera.transInvModelMat, 48);
-    f32View.set(this.camera.projMat, 64);
+    f32View.set(this.camera.prevViewMat, 32);
+    f32View.set(this.camera.invViewMat, 48);
+    f32View.set(this.camera.transInvModelMat, 64);
+    f32View.set(this.camera.projMat, 80);
     
     // camera
-    f32View[80] = this.camera.fov;
-    f32View[81] = this.camera.aspect;
+    f32View[96] = this.camera.fov;
+    f32View[97] = this.camera.aspect;
+    f32View[98] = 0.0; // padding
+    f32View[99] = 0.0; // padding
     
     // scene
-    f32View[84] = app.canvas.width;
-    f32View[85] = app.canvas.height;
-    f32View[86] = this.instances.length;
-    u32View[87] = this.emissiveTriangles.length;
-    u32View[88] = new Uint32Array([Date.now()])[0]; // take only LSB
-    u32View[89] = this.frameCount;
-    u32View[90] = +this.toneMappingEnabled;
-    u32View[91] = +this.accumulationEnabled;
-    u32View[92] = this.maxRayDepth;
-    u32View[93] = this.stratifiedGridSize;
-    u32View[94] = +this.restirEnabled;
-    u32View[95] = +this.useRISOnBounces;
-    u32View[96] = 0;
-    u32View[97] = 0;
-    u32View[98] = 0;
-    u32View[99] = +this.restirBiased;
+    f32View[100] = app.canvas.width;
+    f32View[101] = app.canvas.height;
+    f32View[102] = this.instances.length;
+    u32View[103] = this.emissiveTriangles.length;
+    u32View[104] = new Uint32Array([Date.now()])[0]; // take only LSB
+    u32View[105] = this.frameCount;
+    u32View[106] = this.absoluteFrameCount;
+    u32View[107] = +this.toneMappingEnabled;
+    u32View[108] = +this.accumulationEnabled;
+    u32View[109] = this.maxRayDepth;
+    u32View[110] = this.stratifiedGridSize;
+    u32View[111] = +this.restirEnabled;
+    u32View[112] = +this.useRISOnBounces;
+    u32View[113] = +this.restirBiased;
+    u32View[114] = 0; // padding
+    u32View[115] = 0; // padding
 
     app.device.queue.writeBuffer(this.uniformBuffer!, 0, sceneData);
   }

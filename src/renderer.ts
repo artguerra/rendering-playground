@@ -4,7 +4,7 @@ import displayPathtracingShaders from "@shaders/display_pathtracing.wgsl?raw";
 
 import { Scene } from "./scene";
 
-const RESTIR_NEEDED_STORAGE_BUFFERS = 10;
+const RESTIR_NEEDED_STORAGE_BUFFERS = 11;
 
 export interface GPUAppBase {
   device: GPUDevice;
@@ -21,7 +21,8 @@ export interface GPUAppPipeline extends GPUAppBase {
   accumulationWrite: GPUTexture;
   pathtraceOutput: GPUTexture;
 
-  primarySurfaceBuffer: GPUBuffer;
+  primarySurfaceBufferA: GPUBuffer;
+  primarySurfaceBufferB: GPUBuffer;
   reservoirsBufferA: GPUBuffer;
   reservoirsBufferB: GPUBuffer;
 
@@ -50,7 +51,9 @@ export interface GPUApp extends GPUAppPipeline {
   sceneBindGroup: GPUBindGroup,
   geometryBindGroup: GPUBindGroup,
   restirBindGroupA: GPUBindGroup,
+  restirBindGroupASwapped: GPUBindGroup,
   restirBindGroupB: GPUBindGroup,
+  restirBindGroupBSwapped: GPUBindGroup,
   displayBindGroupA: GPUBindGroup,
   displayBindGroupB: GPUBindGroup,
 }
@@ -127,7 +130,8 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: "rgba32float", access: "write-only" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: "rgba32float", access: "write-only" } },
     ]
   });
 
@@ -297,7 +301,12 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
   const primarySurfaceStride = 48;
   const reservoirInitialStride = 32;
 
-  const primarySurfaceBuffer = app.device.createBuffer({
+  const primarySurfaceBufferA = app.device.createBuffer({
+    size: pixelCount * primarySurfaceStride,
+    usage: GPUBufferUsage.STORAGE,
+  });
+
+  const primarySurfaceBufferB = app.device.createBuffer({
     size: pixelCount * primarySurfaceStride,
     usage: GPUBufferUsage.STORAGE,
   });
@@ -315,7 +324,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
   return { ...app,
     rasterShaderModule, pathtracerComputeShaderModule, displayPathtracingShaderModule,
     depthTexture, accumulationRead, accumulationWrite, pathtraceOutput,
-    primarySurfaceBuffer, reservoirsBufferA, reservoirsBufferB,
+    primarySurfaceBufferA, primarySurfaceBufferB, reservoirsBufferA, reservoirsBufferB,
     sceneBindGroupLayout, geometryBindGroupLayout, restirBindGroupLayout, displayBindGroupLayout,
     rasterPipeline, displayPathtracingPipeline, wireframePipeline,
     visibilityPipeline, initialRisPipeline, visibilityReusePipeline, temporalReusePipeline,
@@ -354,10 +363,23 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
     label: "restir bind group A",
     layout: app.restirBindGroupLayout,
     entries: [
-      { binding: 0, resource: { buffer: app.primarySurfaceBuffer } },
-      { binding: 1, resource: { buffer: app.reservoirsBufferA } },
-      { binding: 2, resource: { buffer: app.reservoirsBufferB } },
-      { binding: 3, resource: app.pathtraceOutput.createView() },
+      { binding: 0, resource: { buffer: app.primarySurfaceBufferA } },
+      { binding: 1, resource: { buffer: app.primarySurfaceBufferB } },
+      { binding: 2, resource: { buffer: app.reservoirsBufferA } },
+      { binding: 3, resource: { buffer: app.reservoirsBufferB } },
+      { binding: 4, resource: app.pathtraceOutput.createView() },
+    ],
+  });
+
+  const restirBindGroupASwapped = app.device.createBindGroup({
+    label: "restir bind group A swapped",
+    layout: app.restirBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: app.primarySurfaceBufferA } }, // stay A
+      { binding: 1, resource: { buffer: app.primarySurfaceBufferB } }, // stay B
+      { binding: 2, resource: { buffer: app.reservoirsBufferB } }, // swapped
+      { binding: 3, resource: { buffer: app.reservoirsBufferA } }, // swapped
+      { binding: 4, resource: app.pathtraceOutput.createView() },
     ],
   });
 
@@ -365,10 +387,23 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
     label: "restir bind group B",
     layout: app.restirBindGroupLayout,
     entries: [
-      { binding: 0, resource: { buffer: app.primarySurfaceBuffer } },
-      { binding: 1, resource: { buffer: app.reservoirsBufferB } },
-      { binding: 2, resource: { buffer: app.reservoirsBufferA } },
-      { binding: 3, resource: app.pathtraceOutput.createView() },
+      { binding: 0, resource: { buffer: app.primarySurfaceBufferB } },
+      { binding: 1, resource: { buffer: app.primarySurfaceBufferA } },
+      { binding: 2, resource: { buffer: app.reservoirsBufferB } },
+      { binding: 3, resource: { buffer: app.reservoirsBufferA } },
+      { binding: 4, resource: app.pathtraceOutput.createView() },
+    ],
+  });
+
+  const restirBindGroupBSwapped = app.device.createBindGroup({
+    label: "restir bind group B swapped",
+    layout: app.restirBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: app.primarySurfaceBufferB } }, // stay B
+      { binding: 1, resource: { buffer: app.primarySurfaceBufferA } }, // stay A
+      { binding: 2, resource: { buffer: app.reservoirsBufferA } }, // swapped
+      { binding: 3, resource: { buffer: app.reservoirsBufferB } }, // swapped
+      { binding: 4, resource: app.pathtraceOutput.createView() },
     ],
   });
 
@@ -392,7 +427,8 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
     ],
   });
 
-  return { ...app, sceneBindGroup, geometryBindGroup, restirBindGroupA, restirBindGroupB,
+  return { ...app, sceneBindGroup, geometryBindGroup,
+    restirBindGroupA, restirBindGroupASwapped, restirBindGroupB, restirBindGroupBSwapped,
     displayBindGroupA, displayBindGroupB };
 }
 
@@ -403,8 +439,8 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     const workgroupCountX = Math.ceil(app.canvas.width / 8);
     const workgroupCountY = Math.ceil(app.canvas.height / 8);
 
-    const bg0 = (scene.frameCount % 2 === 0) ? app.restirBindGroupA : app.restirBindGroupB;
-    const bg1 = (scene.frameCount % 2 === 0) ? app.restirBindGroupB : app.restirBindGroupA;
+    const bg = (scene.absoluteFrameCount % 2 === 0) ? app.restirBindGroupA : app.restirBindGroupB;
+    const bgSwapped = (scene.absoluteFrameCount % 2 === 0) ? app.restirBindGroupASwapped : app.restirBindGroupBSwapped;
 
     const computePass = encoder.beginComputePass({ label: "pathtracing compute pass" });
 
@@ -412,7 +448,7 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     computePass.setBindGroup(1, app.geometryBindGroup);
 
     if (app.supportsReSTIR) {
-      computePass.setBindGroup(2, bg0);
+      computePass.setBindGroup(2, bg);
 
       computePass.setPipeline(app.visibilityPipeline);
       computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
@@ -430,18 +466,21 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
 
       if (scene.spatialReuseEnabled) {
         // swap buffers to have the reservoirs computed so far in the reservoirs_prev storage, write to reservoirs_curr
-        computePass.setBindGroup(2, bg1);
+        computePass.setBindGroup(2, bgSwapped);
         computePass.setPipeline(app.spatialReusePipeline);
         computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
         // second pass if biased
         if (scene.restirBiased) {
-          computePass.setBindGroup(2, bg0);
+          computePass.setBindGroup(2, bg);
           computePass.setPipeline(app.spatialReusePipeline);
           computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
         }
       }
 
+      const finalBg = (scene.spatialReuseEnabled && !scene.restirBiased) ? bgSwapped : bg;
+
+      computePass.setBindGroup(2, finalBg);
       computePass.setPipeline(app.computePathtracePipeline);
       computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
     }

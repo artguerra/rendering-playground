@@ -114,7 +114,10 @@ function initEvents() {
     state.scene.updateMaterials(state.app);
   });
 
-  ui.raytracingCheck.addEventListener("input", () => { state.scene.frameCount = 0.0; });
+  ui.raytracingCheck.addEventListener("input", () => {
+    state.scene.frameCount = 0.0;
+    state.scene.absoluteFrameCount = 0.0;
+  });
 
   ui.toneMappingCheck.addEventListener("input", () => {
     state.scene.toneMappingEnabled = ui.toneMappingCheck.checked;
@@ -127,6 +130,8 @@ function initEvents() {
       ui.stratifiedGridSlider.value = "1";
       state.scene.stratifiedGridSize = 1;
       ui.sppText.innerText = "1";
+
+      state.scene.absoluteFrameCount = 0.0;
     }
 
     state.scene.frameCount = 0.0;
@@ -135,6 +140,7 @@ function initEvents() {
   ui.restirBiasedCheck.addEventListener("input", () => {
     state.scene.restirBiased = ui.restirBiasedCheck.checked;
     state.scene.frameCount = 0.0;
+    state.scene.absoluteFrameCount = 0.0;
   });
 
   ui.temporalReuseCheck.addEventListener("input", () => {
