@@ -920,6 +920,8 @@ fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // -------------------------- temporal reuse pass --------------------------
 
+// criteria to reject reuse candidates: less than 10% difference in camera distance
+// and less than 25deg difference in the normals of the surfaces.
 fn should_reject_reuse_neighbor(surface: PrimarySurface, neigh_surface: PrimarySurface) -> bool {
   if (!primary_surface_valid(neigh_surface)) {
     return true;
@@ -1028,9 +1030,9 @@ fn get_temporal_neighbor(
 }
 
 // combine reservoirs from temporal neighbors for each pixel.
-// some computation has to be done to fetch what is the temporal neighbor for a pixel,
-// since in this case we are not considering an animation, but a static accumulation, we
-// can consider that every temporal neighbor is at the same pixel
+// we use the previous camera view matrix and the current camera info to fetch what
+// is the temporal neighbor for a pixel, and reuse its reservoir. use the same
+// criteria to reject a neighbor as we do in the spatial reuse.
 @compute @workgroup_size(8, 8, 1)
 fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let width = u32(scene.canvas_width);
@@ -1110,7 +1112,7 @@ fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // -------------------------- spatial reuse pass --------------------------
 
 // combine reservoirs from spatial neighbors for each pixel
-// considers a given radius of the pixel to choose neighbors from, and chooses 5 of them
+// considers a given radius of the pixel to choose neighbors from, and chooses some of them
 // at random. uses difference on camera distance and normals as criteria to reject samples
 // resulting reservoirs from previous passes in reservoirs_prev. output in reservoirs_curr 
 @compute @workgroup_size(8, 8, 1)
