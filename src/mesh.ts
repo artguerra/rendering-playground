@@ -1,9 +1,10 @@
-import { type Vec3, vec3Add, vec3Sub, vec3Normalize, vec3Cross } from "./math";
+import { type Vec3, vec3Add, vec3Sub, vec3Normalize, vec3Cross, vec3AddScaled, vec3MulScalar } from "./math";
 
 export interface Mesh {
   positions: Float32Array;
   normals: Float32Array;
   indices: Uint32Array;
+  centroid: Vec3;
 }
 
 export interface MeshInstance {
@@ -15,7 +16,7 @@ export interface MergedGeometry {
   positions: Float32Array<ArrayBuffer>;
   normals: Float32Array<ArrayBuffer>;
   indices: Uint32Array<ArrayBuffer>;
-  instances: Uint32Array<ArrayBuffer>; // packed data for WGSL: array<Mesh>
+  instances: ArrayBuffer;
 }
 
 export function mergeMeshes(meshInstances: MeshInstance[]): MergedGeometry {
@@ -26,12 +27,15 @@ export function mergeMeshes(meshInstances: MeshInstance[]): MergedGeometry {
     positions: new Float32Array(numVertices),
     normals: new Float32Array(numVertices),
     indices: new Uint32Array(numIndices),
-    instances: new Uint32Array(meshInstances.length * 8),
+    instances: new ArrayBuffer(meshInstances.length * 4 * 12),
   };
 
   let posOffset = 0;
   let idxOffset = 0;
   let triOffset = 0;
+
+  const instanceU32 = new Uint32Array(merged.instances);
+  const instanceF32 = new Float32Array(merged.instances);
 
   for (let i = 0; i < meshInstances.length; ++i) {
     const { mesh, materialIndex } = meshInstances[i];
@@ -42,16 +46,20 @@ export function mergeMeshes(meshInstances: MeshInstance[]): MergedGeometry {
     merged.indices.set(mesh.indices, idxOffset);
 
     const vertexOffset = posOffset / 3;
-    const instanceIdx = i * 8; // 8-slot stride
+    const instanceIdx = i * 12; // stride 12
     
-    merged.instances[instanceIdx + 0] = vertexOffset; // posOffset
-    merged.instances[instanceIdx + 1] = triOffset; // triOffset
-    merged.instances[instanceIdx + 2] = triCount; // numOfTriangles
-    merged.instances[instanceIdx + 3] = materialIndex; // materialIndex
-    merged.instances[instanceIdx + 4] = 0; // bvh_root, filled by bvh
-    merged.instances[instanceIdx + 5] = 0; // bvh_count, filled by bvh
-    merged.instances[instanceIdx + 6] = 0; // padding
-    merged.instances[instanceIdx + 7] = 0; // padding
+    instanceU32[instanceIdx + 0] = vertexOffset; // posOffset
+    instanceU32[instanceIdx + 1] = triOffset; // triOffset
+    instanceU32[instanceIdx + 2] = triCount; // numOfTriangles
+    instanceU32[instanceIdx + 3] = materialIndex; // materialIndex
+    instanceF32[instanceIdx + 4] = mesh.centroid[0]; // centroid x
+    instanceF32[instanceIdx + 5] = mesh.centroid[1]; // centroid y
+    instanceF32[instanceIdx + 6] = mesh.centroid[2]; // centroid z
+    instanceU32[instanceIdx + 7] = 0; // bvh_root, filled by bvh
+    instanceU32[instanceIdx + 8] = 0; // bvh_count, filled by bvh
+    instanceU32[instanceIdx + 9] = 0; // padding
+    instanceU32[instanceIdx + 10] = 0; // padding
+    instanceU32[instanceIdx + 11] = 0; // padding
 
     posOffset += mesh.positions.length;
     idxOffset += mesh.indices.length;
@@ -111,11 +119,15 @@ export function createQuad(origin: Vec3, edge0: Vec3, edge1: Vec3): Mesh {
   const c = vec3Add(origin, edge1);
   const n = vec3Cross(edge0, edge1);
   const indices = [0, 1, 2, 0, 2, 3];
+
+  let centroid = vec3AddScaled(origin, edge0, 0.5);
+  centroid = vec3AddScaled(centroid, edge1, 0.5);
   
   return {
     positions: new Float32Array([...origin, ...a, ...b, ...c]),
     normals: new Float32Array([...n, ...n, ...n, ...n]),
     indices: new Uint32Array(indices),
+    centroid
   };
 }
 
@@ -125,6 +137,7 @@ export function createBox(
   const positions: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
+  let centroid: Vec3 = [0.0, 0.0, 0.0];
 
   const w = width;
   const h = height;
@@ -178,6 +191,8 @@ export function createBox(
 
       positions.push(rx + origin[0], ry + origin[1], rz + origin[2]);
       normals.push(nx, ny, nz);
+
+      centroid = vec3Add(centroid, [rx + origin[0], ry + origin[1], rz + origin[2]]);
     }
 
     indices.push(
@@ -187,10 +202,13 @@ export function createBox(
     vOffset += 4;
   }
 
+  centroid = vec3MulScalar(centroid, 1.0 / (positions.length / 3));
+
   return {
     positions: new Float32Array(positions),
     normals: new Float32Array(normals),
-    indices: new Uint32Array(indices)
+    indices: new Uint32Array(indices),
+    centroid
   };
 }
 
@@ -230,7 +248,8 @@ export function createSphere(origin: Vec3, radius: number, latitudeRes: number, 
   return {
     positions: new Float32Array(positions),
     normals: new Float32Array(normals),
-    indices: new Uint32Array(indices)
+    indices: new Uint32Array(indices),
+    centroid: [origin[0], origin[1], origin[2]],
   };
 }
 
@@ -326,6 +345,7 @@ export function createCylinder(
   return {
     positions: new Float32Array(positions),
     normals: new Float32Array(normals),
-    indices: new Uint32Array(indices)
+    indices: new Uint32Array(indices),
+    centroid: vec3Add(origin, [0.0, 0.5 * height, 0.0])
   };
 }

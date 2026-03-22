@@ -14,6 +14,7 @@ export class Camera {
   // matrices
   modelMat: Mat4;
   viewMat: Mat4;
+  prevViewMat: Mat4;
   invViewMat: Mat4;
   transInvModelMat: Mat4;
   projMat: Mat4;
@@ -41,6 +42,7 @@ export class Camera {
 
     this.modelMat = mat4Identity();
     this.viewMat  = mat4Identity(); 
+    this.prevViewMat  = mat4Identity(); 
     this.invViewMat = mat4Identity();
     this.transInvModelMat = mat4Identity();
     this.projMat = mat4Perspective(
@@ -64,6 +66,7 @@ export class Camera {
   }
 
   updateCamera() {
+    this.prevViewMat = this.viewMat;
     this.updateVectors();
     
     const target = vec3Add(this.position, this.front);

@@ -1,6 +1,10 @@
-import mainShaders from "@shaders/main.wgsl?raw";
+import rasterizerShaders from "@shaders/rasterizer.wgsl?raw";
+import pathtracerComputeShaders from "@shaders/pathtracer_compute.wgsl?raw";
+import displayPathtracingShaders from "@shaders/display_pathtracing.wgsl?raw";
 
 import { Scene } from "./scene";
+
+const RESTIR_NEEDED_STORAGE_BUFFERS = 11;
 
 export interface GPUAppBase {
   device: GPUDevice;
@@ -8,28 +12,50 @@ export interface GPUAppBase {
   context: GPUCanvasContext;
   canvas: HTMLCanvasElement;
   canvasFormat: GPUTextureFormat;
+  supportsReSTIR: boolean;
 }
 
 export interface GPUAppPipeline extends GPUAppBase {
   depthTexture: GPUTexture;
   accumulationRead: GPUTexture;
   accumulationWrite: GPUTexture;
+  pathtraceOutput: GPUTexture;
 
-  shaderModule: GPUShaderModule;
+  primarySurfaceBufferA: GPUBuffer;
+  primarySurfaceBufferB: GPUBuffer;
+  reservoirsBufferA: GPUBuffer;
+  reservoirsBufferB: GPUBuffer;
+
+  rasterShaderModule: GPUShaderModule;
+  pathtracerComputeShaderModule: GPUShaderModule;
+  displayPathtracingShaderModule: GPUShaderModule;
+
   rasterPipeline: GPURenderPipeline;
-  raytracingPipeline: GPURenderPipeline;
+  displayPathtracingPipeline: GPURenderPipeline;
   wireframePipeline: GPURenderPipeline;
+
+  visibilityPipeline: GPUComputePipeline;
+  initialRisPipeline: GPUComputePipeline;
+  visibilityReusePipeline: GPUComputePipeline;
+  temporalReusePipeline: GPUComputePipeline;
+  spatialReusePipeline: GPUComputePipeline;
+  computePathtracePipeline: GPUComputePipeline;
 
   sceneBindGroupLayout: GPUBindGroupLayout;
   geometryBindGroupLayout: GPUBindGroupLayout;
-  lightBindGroupLayout: GPUBindGroupLayout;
+  restirBindGroupLayout: GPUBindGroupLayout;
+  displayBindGroupLayout: GPUBindGroupLayout;
 }
 
 export interface GPUApp extends GPUAppPipeline {
   sceneBindGroup: GPUBindGroup,
-  geometryBindGroupA: GPUBindGroup,
-  geometryBindGroupB: GPUBindGroup,
-  lightBindGroup: GPUBindGroup,
+  geometryBindGroup: GPUBindGroup,
+  restirBindGroupA: GPUBindGroup,
+  restirBindGroupASwapped: GPUBindGroup,
+  restirBindGroupB: GPUBindGroup,
+  restirBindGroupBSwapped: GPUBindGroup,
+  displayBindGroupA: GPUBindGroup,
+  displayBindGroupB: GPUBindGroup,
 }
 
 export async function initWebGPU(canvas: HTMLCanvasElement): Promise<GPUAppBase> {
@@ -40,7 +66,19 @@ export async function initWebGPU(canvas: HTMLCanvasElement): Promise<GPUAppBase>
   });
   if (!adapter) throw new Error("No adapter available for WebGPU.");
 
-  const device = await adapter.requestDevice();
+  const supportsReSTIR = adapter.limits.maxStorageBuffersPerShaderStage >= RESTIR_NEEDED_STORAGE_BUFFERS;
+
+  let device: GPUDevice;
+  if (supportsReSTIR) {
+    device = await adapter.requestDevice({
+      requiredLimits: {
+        maxStorageBuffersPerShaderStage: RESTIR_NEEDED_STORAGE_BUFFERS
+      },
+    });
+  } else {
+    device = await adapter.requestDevice();
+  }
+
   const context = canvas.getContext("webgpu") as GPUCanvasContext;
   const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 
@@ -50,54 +88,82 @@ export async function initWebGPU(canvas: HTMLCanvasElement): Promise<GPUAppBase>
     alphaMode: "opaque",
   });
 
-  return { adapter, device, canvas, context, canvasFormat };
+  return { adapter, device, canvas, context, canvasFormat, supportsReSTIR };
 }
 
 export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
-  const shaderModule = app.device.createShaderModule({
-    label: "rasterization/raytracing shaders",
-    code: mainShaders,
+  const rasterShaderModule = app.device.createShaderModule({
+    label: "rasterization/wireframe shaders",
+    code: rasterizerShaders,
+  });
+
+  const pathtracerComputeShaderModule = app.device.createShaderModule({
+    label: "pathtracer compute shaders",
+    code: pathtracerComputeShaders,
+  });
+
+  const displayPathtracingShaderModule = app.device.createShaderModule({
+    label: "display pathtracing shaders",
+    code: displayPathtracingShaders,
   });
 
   const sceneBindGroupLayout = app.device.createBindGroupLayout({
     entries: [
-      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
-      { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
     ]
   });
 
   const geometryBindGroupLayout = app.device.createBindGroupLayout({
     entries: [
-      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 3, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 5, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "read-only" } },
-      { binding: 6, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "write-only" } },
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
     ]
   });
 
-  const lightBindGroupLayout = app.device.createBindGroupLayout({
+  const restirBindGroupLayout = app.device.createBindGroupLayout({
     entries: [
-      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: "rgba32float", access: "write-only" } },
     ]
   });
 
-  const pipelineLayout = app.device.createPipelineLayout({
-    bindGroupLayouts: [sceneBindGroupLayout, geometryBindGroupLayout, lightBindGroupLayout],
+  const displayBindGroupLayout = app.device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "read-only" } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "read-only" } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "write-only" } },
+    ]
+  });
+
+  const rasterPipelineLayout = app.device.createPipelineLayout({
+    bindGroupLayouts: [sceneBindGroupLayout, geometryBindGroupLayout],
+  });
+
+  const pathtracePipelineLayout = app.device.createPipelineLayout({
+    bindGroupLayouts: [sceneBindGroupLayout, geometryBindGroupLayout, restirBindGroupLayout],
+  });
+
+  const displayPipelineLayout = app.device.createPipelineLayout({
+    bindGroupLayouts: [sceneBindGroupLayout, displayBindGroupLayout],
   });
 
   const rasterPipeline = app.device.createRenderPipeline({
     label: "rasterization pipeline",
-    layout: pipelineLayout,
+    layout: rasterPipelineLayout,
     vertex: {
-      module: shaderModule,
+      module: rasterShaderModule,
       entryPoint: "raster_vertex_main",
     },
     fragment: {
-      module: shaderModule,
+      module: rasterShaderModule,
       entryPoint: "raster_fragment_main",
       targets: [{ format: app.canvasFormat }],
     },
@@ -114,13 +180,13 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
 
   const wireframePipeline = app.device.createRenderPipeline({
     label: "wireframe pipeline",
-    layout: pipelineLayout,
+    layout: rasterPipelineLayout,
     vertex: {
-      module: shaderModule,
+      module: rasterShaderModule,
       entryPoint: "wireframe_vertex_main",
     },
     fragment: {
-      module: shaderModule,
+      module: rasterShaderModule,
       entryPoint: "wireframe_fragment_main",
       targets: [{ format: app.canvasFormat }],
     },
@@ -135,26 +201,75 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
     },
   });
 
-  const raytracingPipeline = app.device.createRenderPipeline({
-    label: "raytracing pipeline",
-    layout: pipelineLayout,
+  const visibilityPipeline = app.device.createComputePipeline({
+    label: "visibility compute pipeline",
+    layout: pathtracePipelineLayout,
+    compute: {
+      module: pathtracerComputeShaderModule,
+      entryPoint: "visibility_main",
+    },
+  });
+
+  const initialRisPipeline = app.device.createComputePipeline({
+    label: "initial RIS compute pipeline",
+    layout: pathtracePipelineLayout,
+    compute: {
+      module: pathtracerComputeShaderModule,
+      entryPoint: "initial_ris_main",
+    },
+  });
+
+  const visibilityReusePipeline = app.device.createComputePipeline({
+    label: "visibility reuse compute pipeline",
+    layout: pathtracePipelineLayout,
+    compute: {
+      module: pathtracerComputeShaderModule,
+      entryPoint: "visibility_reuse_main",
+    },
+  });
+
+  const temporalReusePipeline = app.device.createComputePipeline({
+    label: "temporal reuse compute pipeline",
+    layout: pathtracePipelineLayout,
+    compute: {
+      module: pathtracerComputeShaderModule,
+      entryPoint: "temporal_reuse_main",
+    },
+  });
+
+  const spatialReusePipeline = app.device.createComputePipeline({
+    label: "spatial reuse compute pipeline",
+    layout: pathtracePipelineLayout,
+    compute: {
+      module: pathtracerComputeShaderModule,
+      entryPoint: "spatial_reuse_main",
+    },
+  });
+
+  const computePathtracePipeline = app.device.createComputePipeline({
+    label: "pathtrace compute pipeline",
+    layout: pathtracePipelineLayout,
+    compute: {
+      module: pathtracerComputeShaderModule,
+      entryPoint: "shade_pathtrace_restir_main",
+    },
+  });
+
+  const displayPathtracingPipeline = app.device.createRenderPipeline({
+    label: "display pathtracing pipeline",
+    layout: displayPipelineLayout,
     vertex: {
-      module: shaderModule,
-      entryPoint: "ray_vertex_main",
+      module: displayPathtracingShaderModule,
+      entryPoint: "present_vertex_main",
     },
     fragment: {
-      module: shaderModule,
-      entryPoint: "ray_fragment_main",
+      module: displayPathtracingShaderModule,
+      entryPoint: "present_fragment_main",
       targets: [{ format: app.canvasFormat }],
     },
     primitive: {
       topology: "triangle-list",
       cullMode: "back",
-    },
-    depthStencil: {
-      format: "depth24plus",
-      depthWriteEnabled: false,
-      depthCompare: "less",
     },
   });
 
@@ -176,9 +291,45 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
     usage: GPUTextureUsage.STORAGE_BINDING,
   });
 
-  return { ...app, shaderModule, depthTexture, accumulationRead, accumulationWrite,
-    sceneBindGroupLayout, geometryBindGroupLayout, lightBindGroupLayout,
-    rasterPipeline, raytracingPipeline, wireframePipeline };
+  const pathtraceOutput = app.device.createTexture({
+    size: [app.canvas.width, app.canvas.height],
+    format: "rgba32float",
+    usage: GPUTextureUsage.STORAGE_BINDING,
+  });
+
+  const pixelCount = app.canvas.width * app.canvas.height;
+  const primarySurfaceStride = 48;
+  const reservoirInitialStride = 32;
+
+  const primarySurfaceBufferA = app.device.createBuffer({
+    size: pixelCount * primarySurfaceStride,
+    usage: GPUBufferUsage.STORAGE,
+  });
+
+  const primarySurfaceBufferB = app.device.createBuffer({
+    size: pixelCount * primarySurfaceStride,
+    usage: GPUBufferUsage.STORAGE,
+  });
+
+  const reservoirsBufferA = app.device.createBuffer({
+    size: pixelCount * reservoirInitialStride,
+    usage: GPUBufferUsage.STORAGE,
+  });
+
+  const reservoirsBufferB = app.device.createBuffer({
+    size: pixelCount * reservoirInitialStride,
+    usage: GPUBufferUsage.STORAGE,
+  });
+
+  return { ...app,
+    rasterShaderModule, pathtracerComputeShaderModule, displayPathtracingShaderModule,
+    depthTexture, accumulationRead, accumulationWrite, pathtraceOutput,
+    primarySurfaceBufferA, primarySurfaceBufferB, reservoirsBufferA, reservoirsBufferB,
+    sceneBindGroupLayout, geometryBindGroupLayout, restirBindGroupLayout, displayBindGroupLayout,
+    rasterPipeline, displayPathtracingPipeline, wireframePipeline,
+    visibilityPipeline, initialRisPipeline, visibilityReusePipeline, temporalReusePipeline,
+    spatialReusePipeline, computePathtracePipeline,
+  };
 }
 
 export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp {
@@ -195,8 +346,8 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
     ],
   });
 
-  const geometryBindGroupA = app.device.createBindGroup({
-    label: "geometry bind group A",
+  const geometryBindGroup = app.device.createBindGroup({
+    label: "geometry bind group",
     layout: app.geometryBindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: scene.posBuffer! } },
@@ -204,80 +355,193 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
       { binding: 2, resource: { buffer: scene.triBuffer! } },
       { binding: 3, resource: { buffer: scene.instanceBuffer! } },
       { binding: 4, resource: { buffer: scene.bvhBuffer! } },
-      { binding: 5, resource: app.accumulationRead.createView() },
-      { binding: 6, resource: app.accumulationWrite.createView() },
+      { binding: 5, resource: { buffer: scene.emissiveTriBuffer! } },
     ],
   });
 
-  const geometryBindGroupB = app.device.createBindGroup({
-    label: "geometry bind group B",
-    layout: app.geometryBindGroupLayout,
+  const restirBindGroupA = app.device.createBindGroup({
+    label: "restir bind group A",
+    layout: app.restirBindGroupLayout,
     entries: [
-      { binding: 0, resource: { buffer: scene.posBuffer! } },
-      { binding: 1, resource: { buffer: scene.normBuffer! } },
-      { binding: 2, resource: { buffer: scene.triBuffer! } },
-      { binding: 3, resource: { buffer: scene.instanceBuffer! } },
-      { binding: 4, resource: { buffer: scene.bvhBuffer! } },
-      { binding: 5, resource: app.accumulationWrite.createView() },
-      { binding: 6, resource: app.accumulationRead.createView() },
+      { binding: 0, resource: { buffer: app.primarySurfaceBufferA } },
+      { binding: 1, resource: { buffer: app.primarySurfaceBufferB } },
+      { binding: 2, resource: { buffer: app.reservoirsBufferA } },
+      { binding: 3, resource: { buffer: app.reservoirsBufferB } },
+      { binding: 4, resource: app.pathtraceOutput.createView() },
     ],
   });
 
-  const lightBindGroup = app.device.createBindGroup({
-    label: "light bind group",
-    layout: app.lightBindGroupLayout,
+  const restirBindGroupASwapped = app.device.createBindGroup({
+    label: "restir bind group A swapped",
+    layout: app.restirBindGroupLayout,
     entries: [
-      { binding: 0, resource: { buffer: scene.pointLightBuffer! } },
-      { binding: 1, resource: { buffer: scene.areaLightBuffer! } },
+      { binding: 0, resource: { buffer: app.primarySurfaceBufferA } }, // stay A
+      { binding: 1, resource: { buffer: app.primarySurfaceBufferB } }, // stay B
+      { binding: 2, resource: { buffer: app.reservoirsBufferB } }, // swapped
+      { binding: 3, resource: { buffer: app.reservoirsBufferA } }, // swapped
+      { binding: 4, resource: app.pathtraceOutput.createView() },
     ],
   });
 
-  return { ...app, sceneBindGroup, geometryBindGroupA, geometryBindGroupB, lightBindGroup };
+  const restirBindGroupB = app.device.createBindGroup({
+    label: "restir bind group B",
+    layout: app.restirBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: app.primarySurfaceBufferB } },
+      { binding: 1, resource: { buffer: app.primarySurfaceBufferA } },
+      { binding: 2, resource: { buffer: app.reservoirsBufferB } },
+      { binding: 3, resource: { buffer: app.reservoirsBufferA } },
+      { binding: 4, resource: app.pathtraceOutput.createView() },
+    ],
+  });
+
+  const restirBindGroupBSwapped = app.device.createBindGroup({
+    label: "restir bind group B swapped",
+    layout: app.restirBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: app.primarySurfaceBufferB } }, // stay B
+      { binding: 1, resource: { buffer: app.primarySurfaceBufferA } }, // stay A
+      { binding: 2, resource: { buffer: app.reservoirsBufferA } }, // swapped
+      { binding: 3, resource: { buffer: app.reservoirsBufferB } }, // swapped
+      { binding: 4, resource: app.pathtraceOutput.createView() },
+    ],
+  });
+
+  const displayBindGroupA = app.device.createBindGroup({
+    label: "display bind group A",
+    layout: app.displayBindGroupLayout,
+    entries: [
+      { binding: 0, resource: app.pathtraceOutput.createView() },
+      { binding: 1, resource: app.accumulationRead.createView() },
+      { binding: 2, resource: app.accumulationWrite.createView() },
+    ],
+  });
+
+  const displayBindGroupB = app.device.createBindGroup({
+    label: "display bind group B",
+    layout: app.displayBindGroupLayout,
+    entries: [
+      { binding: 0, resource: app.pathtraceOutput.createView() },
+      { binding: 1, resource: app.accumulationWrite.createView() },
+      { binding: 2, resource: app.accumulationRead.createView() },
+    ],
+  });
+
+  return { ...app, sceneBindGroup, geometryBindGroup,
+    restirBindGroupA, restirBindGroupASwapped, restirBindGroupB, restirBindGroupBSwapped,
+    displayBindGroupA, displayBindGroupB };
 }
 
 export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void {
-  const renderPassDescriptor: GPURenderPassDescriptor = {
-    label: "Main rendering pass",
-    colorAttachments: [{
-      view: app.context.getCurrentTexture().createView(),
-      loadOp: "clear",
-      clearValue: { r: 0, g: 0, b: 0, a: 1 },
-      storeOp: "store",
-    }],
-    depthStencilAttachment: {
-      view: app.depthTexture.createView(),
-      depthClearValue: 1.0,
-      depthLoadOp: "clear",
-      depthStoreOp: "store",
-    },
-  };
-
-  const encoder = app.device.createCommandEncoder({ label: "display encoder" });
-  const pass = encoder.beginRenderPass(renderPassDescriptor);
-
-  pass.setBindGroup(0, app.sceneBindGroup);
-  pass.setBindGroup(1, (scene.frameCount % 2 === 0) ? app.geometryBindGroupA : app.geometryBindGroupB);
-  pass.setBindGroup(2, app.lightBindGroup);
+  const encoder = app.device.createCommandEncoder({ label: "renderer encoder" });
 
   if (useRaytracing) {
-    pass.setPipeline(app.raytracingPipeline);
+    const workgroupCountX = Math.ceil(app.canvas.width / 8);
+    const workgroupCountY = Math.ceil(app.canvas.height / 8);
+
+    const bg = (scene.absoluteFrameCount % 2 === 0) ? app.restirBindGroupA : app.restirBindGroupB;
+    const bgSwapped = (scene.absoluteFrameCount % 2 === 0) ? app.restirBindGroupASwapped : app.restirBindGroupBSwapped;
+
+    const computePass = encoder.beginComputePass({ label: "pathtracing compute pass" });
+
+    computePass.setBindGroup(0, app.sceneBindGroup);
+    computePass.setBindGroup(1, app.geometryBindGroup);
+
+    if (app.supportsReSTIR) {
+      computePass.setBindGroup(2, bg);
+
+      computePass.setPipeline(app.visibilityPipeline);
+      computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+
+      computePass.setPipeline(app.initialRisPipeline);
+      computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+
+      computePass.setPipeline(app.visibilityReusePipeline);
+      computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+
+      if (scene.temporalReuseEnabled) {
+        computePass.setPipeline(app.temporalReusePipeline);
+        computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+      }
+
+      if (scene.spatialReuseEnabled) {
+        // swap buffers to have the reservoirs computed so far in the reservoirs_prev storage, write to reservoirs_curr
+        computePass.setBindGroup(2, bgSwapped);
+        computePass.setPipeline(app.spatialReusePipeline);
+        computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+
+        // second pass if biased
+        if (scene.restirBiased) {
+          computePass.setBindGroup(2, bg);
+          computePass.setPipeline(app.spatialReusePipeline);
+          computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+        }
+      }
+
+      const finalBg = (scene.spatialReuseEnabled && !scene.restirBiased) ? bgSwapped : bg;
+
+      computePass.setBindGroup(2, finalBg);
+      computePass.setPipeline(app.computePathtracePipeline);
+      computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+    }
+
+    computePass.end();
+
+    const renderPassDescriptor: GPURenderPassDescriptor = {
+      label: "Display pathtracing pass",
+      colorAttachments: [{
+        view: app.context.getCurrentTexture().createView(),
+        loadOp: "clear",
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        storeOp: "store",
+      }],
+    };
+
+    const pass = encoder.beginRenderPass(renderPassDescriptor);
+
+    pass.setPipeline(app.displayPathtracingPipeline);
+    pass.setBindGroup(0, app.sceneBindGroup);
+    pass.setBindGroup(1, (scene.frameCount % 2 === 0) ? app.displayBindGroupA : app.displayBindGroupB);
     pass.draw(6);
+
+    pass.end();
   } else {
+    const renderPassDescriptor: GPURenderPassDescriptor = {
+      label: "rasterizer rendering pass",
+      colorAttachments: [{
+        view: app.context.getCurrentTexture().createView(),
+        loadOp: "clear",
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        storeOp: "store",
+      }],
+      depthStencilAttachment: {
+        view: app.depthTexture.createView(),
+        depthClearValue: 1.0,
+        depthLoadOp: "clear",
+        depthStoreOp: "store",
+      },
+    };
+
+    const pass = encoder.beginRenderPass(renderPassDescriptor);
+
     pass.setPipeline(app.rasterPipeline);
+
+    pass.setBindGroup(0, app.sceneBindGroup);
+    pass.setBindGroup(1, app.geometryBindGroup);
     
     for (let i = 0; i < scene.instances.length; i++) {
       const numIndices = scene.instances[i].mesh.indices.length;
       pass.draw(numIndices, 1, 0, i); 
     }
-  }
 
-  if (scene.viewBvh && scene.bvhDataArray) {
-    pass.setPipeline(app.wireframePipeline);
-    const numNodes = scene.bvhDataArray.byteLength / 32;
-    pass.draw(24, numNodes, 0, 0);
+    if (scene.viewBvh && scene.bvhDataArray) {
+      pass.setPipeline(app.wireframePipeline);
+      const numNodes = scene.bvhDataArray.byteLength / 32;
+      pass.draw(24, numNodes, 0, 0);
+    }
+    
+    pass.end();
   }
-  
-  pass.end();
 
   const commandBuffer = encoder.finish();
   app.device.queue.submit([commandBuffer]);

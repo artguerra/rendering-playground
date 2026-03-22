@@ -30,8 +30,7 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background:
-        radial-gradient(circle at top, #1b2330 0%, #10141c 38%, #080a0e 100%);
+      background-color: var(--bg);
       color: var(--text);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -151,6 +150,7 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
+      margin-top: 10px;
       margin-bottom: 10px;
     }
 
@@ -307,6 +307,7 @@
     }
 
     .group-content {
+      margin-top: 10px;
       padding: 0 10px 10px;
       display: grid;
       gap: 8px;
@@ -379,12 +380,75 @@
         left: 10px;
       }
     }
+
+    select {
+      width: 100%;
+      margin: 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border-strong);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      outline: none;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+    }
+
+    select option {
+      background: #10141c;
+      color: var(--text);
+    }
+
+    select:focus {
+      border-color: rgba(122, 162, 255, 0.5);
+    }
+
+    #errorScreen {
+      display: none;
+      position: absolute;
+      inset: 0;
+      justify-content: center;
+      align-items: center;
+      z-index: 100;
+      padding: 20px;
+    }
+
+    .error-card {
+      padding: 32px;
+      max-width: 420px;
+      text-align: center;
+      gap: 12px;
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+
+    .error-title {
+      color: var(--warn);
+      font-size: 1rem;
+    }
+
+    .error-text {
+      font-size: 0.9rem;
+      line-height: 1.6;
+      color: var(--text);
+    }
     </style>
   </head>
 
   <body>
     <div class="app">
       <canvas width="1024" height="768"></canvas>
+
+      <div id="errorScreen">
+        <div class="row error-card">
+          <div class="overlay-title error-title">Device Not Supported</div>
+          <div class="hint error-text">
+            This device does not support the amount of storage buffers needed to compute ReSTIR (10 minimum).
+          </div>
+        </div>
+      </div>
 
       <div class="overlay-shell">
         <details class="overlay" open>
@@ -411,6 +475,16 @@
             </div>
 
             <div class="section">
+              <div class="row">
+                <div class="row-top">
+                  <label class="label" for="sceneSelect">Scene</label>
+                </div>
+                <select id="sceneSelect">
+                  <option value="lightShowcase">Light Sampling Showcase</option>
+                  <option value="cornell">Cornell Box</option>
+                </select>
+              </div>
+
               <div class="row inline">
                 <input type="checkbox" id="raytracingCheckbox" />
                 <label class="label" for="raytracingCheckbox">Path tracing</label>
@@ -441,7 +515,7 @@
                     <span
                       class="info"
                       tabindex="0"
-                      data-tooltip="Grid side per pixel used to shoot the sample rays."
+                      data-tooltip="Grid side per pixel used to shoot the sample rays. If using ReSTIR, keep at 1 to have the correct behaviour."
                     >i</span>
                     <span
                       class="info warn"
@@ -451,10 +525,10 @@
                   </div>
                   <span class="value">√SPP</span>
                 </div>
-                <input type="range" id="stratifiedGridN" min="1" max="16" step="1" value="2" />
+                <input type="range" id="stratifiedGridN" min="1" max="16" step="1" value="1" />
                 <div class="row-top">
                   <span class="hint">Samples per pixel</span>
-                  <span id="spp" class="stat">4</span>
+                  <span id="spp" class="stat">1</span>
                 </div>
               </div>
 
@@ -469,6 +543,37 @@
                   >i</span>
                 </div>
               </div>
+
+              <div class="row inline">
+                <input type="checkbox" id="restirCheckbox" checked />
+                <label class="label" for="restirCheckbox">ReSTIR</label>
+              </div>
+
+
+              <details class="group">
+                <summary>ReSTIR controls</summary>
+                <div class="group-content">
+                  <div class="row inline">
+                    <input type="checkbox" id="restirBiasedCheckbox" checked />
+                    <label class="label" for="restirBiasedCheckbox">Biased ReSTIR</label>
+                  </div>
+
+                  <div class="row inline">
+                    <input type="checkbox" id="temporalReuseCheckbox" checked />
+                    <label class="label" for="temporalReuseCheckbox">Temporal Reuse</label>
+                  </div>
+
+                  <div class="row inline">
+                    <input type="checkbox" id="spatialReuseCheckbox" checked />
+                    <label class="label" for="spatialReuseCheckbox">Spatial Reuse</label>
+                  </div>
+
+                  <div class="row inline">
+                    <input type="checkbox" id="risOnBouncesCheckbox" />
+                    <label class="label" for="risOnBouncesCheckbox">ReSTIR - Use streaming RIS on bounces</label>
+                  </div>
+                </div>
+              </details>
 
               <div class="row inline">
                 <input type="checkbox" id="toneMappingCheckbox" />
@@ -487,14 +592,14 @@
                     <div class="row-top">
                       <label class="label" for="roughness">Roughness</label>
                     </div>
-                    <input type="range" id="roughness" min="0.1" max="1.0" step="0.05" value="0.7" />
+                    <input type="range" id="roughness" min="0.1" max="1.0" step="0.05" value="0.1" />
                   </div>
 
                   <div class="row">
                     <div class="row-top">
                       <label class="label" for="metalness">Metalness</label>
                     </div>
-                    <input type="range" id="metalness" min="0.0" max="1.0" step="0.05" value="0.3" />
+                    <input type="range" id="metalness" min="0.0" max="1.0" step="0.05" value="1.0" />
                   </div>
                 </div>
               </details>

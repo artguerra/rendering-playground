@@ -1,28 +1,40 @@
 import type { GPUAppPipeline, GPUAppBase } from "./renderer";
-import type { AreaLight, LightSource, Material, PointLight } from "./types";
+import type { Material } from "./types";
 import { type MeshInstance, type MergedGeometry, mergeMeshes } from "./mesh";
-import { vec3Add, vec3Normalize, vec3Cross } from "./math";
 import { createGPUBuffer } from "./utils";
 import { Camera } from "./camera";
 import { BVHTree } from "./bvh";
+
+interface EmissiveTriangle {
+  triIdx: number;
+  meshIdx: number;
+}
 
 export class Scene {
   camera: Camera;
   instances: MeshInstance[];
   materials: Material[];
 
-  pointLights: PointLight[] = [];
-  areaLights: AreaLight[] = [];
+  emissiveTriangles: EmissiveTriangle[] = [];
 
   bvh?: BVHTree;
   viewBvh: boolean = false;
   
   mergedGeometry: MergedGeometry;
+  
+  // restir options
   toneMappingEnabled: boolean = false;
+  restirEnabled: boolean = true;
+  useRISOnBounces: boolean = false;
+  restirBiased: boolean = true;
+  temporalReuseEnabled: boolean = true;
+  spatialReuseEnabled: boolean = true;
   accumulationEnabled: boolean = true;
-  stratifiedGridSize: number = 2;
+
+  stratifiedGridSize: number = 1;
   maxRayDepth: number = 3;
   frameCount: number = 0.0;
+  absoluteFrameCount: number = 0.0;
 
   // GPU buffers
   buffersInitialized: boolean = false;
@@ -32,65 +44,56 @@ export class Scene {
   triBuffer?: GPUBuffer;
   instanceBuffer?: GPUBuffer;
   matBuffer?: GPUBuffer;
-  pointLightBuffer?: GPUBuffer;
-  areaLightBuffer?: GPUBuffer;
+  emissiveTriBuffer?: GPUBuffer;
 
   bvhDataArray?: ArrayBuffer;
   bvhBuffer?: GPUBuffer;
 
-  pointLightDataArray?: ArrayBuffer;
-  areaLightDataArray?: ArrayBuffer;
+  emissiveTriDataArray?: ArrayBuffer;
 
-  constructor(camera: Camera, instances: MeshInstance[], materials: Material[], lights: LightSource[]) {
+  constructor(camera: Camera, instances: MeshInstance[], materials: Material[]) {
     this.camera = camera;
     this.instances = instances;
     this.materials = materials;
 
-    for (const light of lights) {
-      if (light.type === "point") this.pointLights.push(light);
-      if (light.type === "area") this.areaLights.push(light);
-    }
-
-    // create area light visualizations
-    for (const l of this.areaLights) {
-      const matIdx = this.materials.length;
-      
-      this.materials.push({
-        albedo: [l.color[0], l.color[1], l.color[2]],
-        roughness: 1.0,
-        metalness: 0.0,
-        materialType: 2, // emissive
-      });
-
-      const p0 = l.position;
-      const p1 = vec3Add(p0, l.u);
-      const p2 = vec3Add(p1, l.v);
-      const p3 = vec3Add(p0, l.v);
-
-      // normal vector
-      const n = vec3Normalize(vec3Cross(l.u, l.v));
-
-      // add as a mesh
-      this.instances.push({
-        mesh: {
-          positions: new Float32Array([...p0, ...p1, ...p2, ...p3]),
-          normals: new Float32Array([...n, ...n, ...n, ...n]),
-          indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
-        },
-        materialIndex: matIdx
-      } as MeshInstance);
-    }
-
     this.mergedGeometry = mergeMeshes(this.instances);
+    this.computeBVH();
+    this.extractEmissiveTriangles();
+  }
+
+  private extractEmissiveTriangles() {
+    this.emissiveTriangles = [];
+    const instanceU32 = new Uint32Array(this.mergedGeometry.instances);
+
+    for (let i = 0; i < this.instances.length; i++) {
+      const matIdx = this.instances[i].materialIndex;
+      const mat = this.materials[matIdx];
+
+      const instanceIdx = i * 12; // stride 12
+
+      if (mat.emissionStrength && mat.emissionStrength > 0.0) {
+        const triOffset = instanceU32[instanceIdx + 1];
+        const triCount = instanceU32[instanceIdx + 2];
+
+        for (let t = 0; t < triCount; t++) {
+          this.emissiveTriangles.push({
+            triIdx: triOffset + t,
+            meshIdx: i,
+          });
+        }
+      }
+    }
   }
 
   computeBVH() {
     const allNodes: any[] = [];
+    const instanceU32 = new Uint32Array(this.mergedGeometry.instances);
 
     for (let i = 0; i < this.instances.length; i++) {
-      const vertexOffset = this.mergedGeometry.instances[i * 8 + 0];
-      const triOffset = this.mergedGeometry.instances[i * 8 + 1];
-      const triCount = this.mergedGeometry.instances[i * 8 + 2];
+      const instanceIdx = i * 12; // stride 12
+      const vertexOffset = instanceU32[instanceIdx + 0];
+      const triOffset = instanceU32[instanceIdx + 1];
+      const triCount = instanceU32[instanceIdx + 2];
 
       // build BVH for this specific mesh
       const bvh = new BVHTree(this.mergedGeometry, triOffset, triCount, vertexOffset);
@@ -105,8 +108,8 @@ export class Scene {
       allNodes.push(...flatNodes);
 
       // set bvh root node for mesh
-      this.mergedGeometry.instances[i * 8 + 4] = bvhRoot;
-      this.mergedGeometry.instances[i * 8 + 5] = flatNodes.length;
+      instanceU32[instanceIdx + 7] = bvhRoot;
+      instanceU32[instanceIdx + 8] = flatNodes.length;
     }
 
     // 8 bytes per node
@@ -140,14 +143,13 @@ export class Scene {
     this.bvhBuffer = createGPUBuffer(app.device, this.bvhDataArray!, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
 
     this.uniformBuffer = app.device.createBuffer({
-      size: 96 * 4, // 96 floats in scene struct in shader
+      size: 116 * 4, // 116 floats in scene struct in shader
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
     // 8 bytes per material
     const matData = new ArrayBuffer(this.materials.length * 8 * 4);
     const matDataF32 = new Float32Array(matData);
-    const matDataU32 = new Uint32Array(matData);
     for (let i = 0; i < this.materials.length; i++) {
       const m = this.materials[i];
       const offset = i * 8;
@@ -155,62 +157,32 @@ export class Scene {
       matDataF32.set(m.albedo, offset);
       matDataF32[offset + 3] = m.roughness;
       matDataF32[offset + 4] = m.metalness;
-      matDataU32[offset + 5] = m.materialType;
+      matDataF32[offset + 5] = m.emissionStrength;
       // 6, 7 are padding
     }
     this.matBuffer = createGPUBuffer(app.device, matData, storageUsage);
 
-    this.packLightData();
-    this.pointLightBuffer = createGPUBuffer(app.device, new Uint8Array(this.pointLightDataArray!), storageUsage);
-    this.areaLightBuffer = createGPUBuffer(app.device, new Uint8Array(this.areaLightDataArray!), storageUsage);
+    // emissive triangles (2 u32s = 8 bytes each)
+    // considering lights dont move, if so have to update on updateGPU
+    const numEmissive = Math.max(1, this.emissiveTriangles.length);
+    console.log(`number of emissive triangles: ${numEmissive}`);
+
+    this.emissiveTriDataArray = new ArrayBuffer(numEmissive * 2 * 4);
+    const eU32View = new Uint32Array(this.emissiveTriDataArray);
+
+    for (let i = 0; i < this.emissiveTriangles.length; i++) {
+      const offset = i * 2;
+      eU32View[offset] = this.emissiveTriangles[i].triIdx;
+      eU32View[offset + 1] = this.emissiveTriangles[i].meshIdx;
+    }
+    this.emissiveTriBuffer = createGPUBuffer(app.device, new Uint8Array(this.emissiveTriDataArray!), storageUsage);
 
     this.buffersInitialized = true;
   }
 
-  private packLightData() {
-    // point lights (8 floats/u32s = 32 bytes each)
-    const numPointLights = Math.max(1, this.pointLights.length); // at least allocate 1
-    this.pointLightDataArray = new ArrayBuffer(numPointLights * 8 * 4);
-    const pF32View = new Float32Array(this.pointLightDataArray);
-    const pU32View = new Uint32Array(this.pointLightDataArray);
-
-    for (let i = 0; i < this.pointLights.length; i++) {
-      const l = this.pointLights[i];
-      const offset = i * 8;
-
-      pF32View.set(l.position, offset);
-      pF32View[offset + 3] = l.intensity;
-
-      pF32View.set(l.color, offset + 4);
-      pU32View[offset + 7] = l.rayTracedShadows;
-    }
-
-    // area lights (16 floats/u32s = 64 bytes each)
-    const numAreaLights = Math.max(1, this.areaLights.length); // at least allocate 1
-    this.areaLightDataArray = new ArrayBuffer(numAreaLights * 16 * 4);
-    const aF32View = new Float32Array(this.areaLightDataArray);
-    const aU32View = new Uint32Array(this.areaLightDataArray);
-
-    for (let i = 0; i < this.areaLights.length; i++) {
-      const l = this.areaLights[i];
-      const offset = i * 16;
-
-      aF32View.set(l.position, offset);
-      aF32View[offset + 3] = l.intensity;
-
-      aF32View.set(l.color, offset + 4);
-      aU32View[offset + 7] = l.rayTracedShadows;
-
-      aF32View.set(l.u, offset + 8);
-      aF32View[offset + 11] = 0.0; // padding
-
-      aF32View.set(l.v, offset + 12);
-      aF32View[offset + 15] = 0.0; // padding
-    }
-  }
-
   animate() {
     this.frameCount += 1.0;
+    this.absoluteFrameCount += 1.0;
   }
 
   updateMaterials(app: GPUAppPipeline) {
@@ -218,7 +190,6 @@ export class Scene {
 
     const matData = new ArrayBuffer(this.materials.length * 8 * 4);
     const matDataF32 = new Float32Array(matData);
-    const matDataU32 = new Uint32Array(matData);
 
     for (let i = 0; i < this.materials.length; i++) {
       const m = this.materials[i];
@@ -226,7 +197,8 @@ export class Scene {
       matDataF32.set(m.albedo, offset);
       matDataF32[offset + 3] = m.roughness;
       matDataF32[offset + 4] = m.metalness;
-      matDataU32[offset + 5] = m.materialType;
+      matDataF32[offset + 5] = m.emissionStrength;
+      // 6, 7 are padding
     }
 
     app.device.queue.writeBuffer(this.matBuffer!, 0, matData);
@@ -235,41 +207,42 @@ export class Scene {
   updateGPU(app: GPUAppPipeline) {
     if (!this.buffersInitialized) return;
 
-    const sceneData = new ArrayBuffer(96 * 4);
+    const sceneData = new ArrayBuffer(116 * 4);
     const f32View = new Float32Array(sceneData);
     const u32View = new Uint32Array(sceneData);
 
     // matrices
     f32View.set(this.camera.modelMat, 0);
     f32View.set(this.camera.viewMat, 16);
-    f32View.set(this.camera.invViewMat, 32);
-    f32View.set(this.camera.transInvModelMat, 48);
-    f32View.set(this.camera.projMat, 64);
+    f32View.set(this.camera.prevViewMat, 32);
+    f32View.set(this.camera.invViewMat, 48);
+    f32View.set(this.camera.transInvModelMat, 64);
+    f32View.set(this.camera.projMat, 80);
     
     // camera
-    f32View[80] = this.camera.fov;
-    f32View[81] = this.camera.aspect;
+    f32View[96] = this.camera.fov;
+    f32View[97] = this.camera.aspect;
+    f32View[98] = 0.0; // padding
+    f32View[99] = 0.0; // padding
     
     // scene
-    f32View[84] = app.canvas.width;
-    f32View[85] = app.canvas.height;
-    f32View[86] = this.instances.length;
-    f32View[87] = this.pointLights.length;
-    f32View[88] = this.areaLights.length;
-    u32View[89] = new Uint32Array([Date.now()])[0]; // take only LSB
-    u32View[90] = this.frameCount;
-    u32View[91] = 0; // padding
-    u32View[92] = +this.toneMappingEnabled;
-    u32View[93] = +this.accumulationEnabled;
-    u32View[94] = this.maxRayDepth;
-    u32View[95] = this.stratifiedGridSize;
+    f32View[100] = app.canvas.width;
+    f32View[101] = app.canvas.height;
+    f32View[102] = this.instances.length;
+    u32View[103] = this.emissiveTriangles.length;
+    u32View[104] = new Uint32Array([Date.now()])[0]; // take only LSB
+    u32View[105] = this.frameCount;
+    u32View[106] = this.absoluteFrameCount;
+    u32View[107] = +this.toneMappingEnabled;
+    u32View[108] = +this.accumulationEnabled;
+    u32View[109] = this.maxRayDepth;
+    u32View[110] = this.stratifiedGridSize;
+    u32View[111] = +this.restirEnabled;
+    u32View[112] = +this.useRISOnBounces;
+    u32View[113] = +this.restirBiased;
+    u32View[114] = 0; // padding
+    u32View[115] = 0; // padding
 
     app.device.queue.writeBuffer(this.uniformBuffer!, 0, sceneData);
-
-    // update lights
-    // repack and upload it again
-    this.packLightData();
-    app.device.queue.writeBuffer(this.pointLightBuffer!, 0, this.pointLightDataArray!);
-    app.device.queue.writeBuffer(this.areaLightBuffer!, 0, this.areaLightDataArray!);
   }
 }
